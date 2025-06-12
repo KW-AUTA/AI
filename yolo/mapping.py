@@ -16,6 +16,7 @@ import pandas as pd
 import time
 import random
 import torch
+import requests
 from routes.dto.response.mapping_response import MappingInfo, MappingResponse
 from typing import List, Dict, Tuple, Optional
 
@@ -50,7 +51,7 @@ def catergorize_match(match: MatchResult) -> List[str]:
     match.errorCategories = category
     return category
 
-def get_mapping_info(matches: List[MatchResult]) -> MappingResponse:
+def get_mapping_info(matches: List[MatchResult]) -> List[MappingInfo]:
     """매칭 결과를 매핑 정보로 변환"""
     mapping_infos = []
     for match in matches:
@@ -64,11 +65,14 @@ def get_mapping_info(matches: List[MatchResult]) -> MappingResponse:
             isRouting=bool(match.figma_dest)
         )
         mapping_infos.append(mapping_info)
-    return MappingResponse(mappings=mapping_infos)
+    return mapping_infos
 
-def process_images(figma_json: Dict, web_navigator: WebNavigator, target_height: int) -> Tuple[Image.Image, Image.Image, List[Dict]]:
+def process_images(figma_url: str, web_navigator: WebNavigator, target_height: int) -> Tuple[Image.Image, Image.Image, List[Dict]]:
     """이미지 처리 및 데이터 추출"""
-    frames = load_figma_json(figma_json)
+    response = requests.get(figma_url)
+    response.raise_for_status()
+
+    frames = response.json()
     root = frames[0]
     print('#########################')
     print(root)
@@ -150,16 +154,16 @@ def process_matches(matches: List[MatchResult], web_navigator: WebNavigator, fra
                 
     return matches
 
-def mapping(base_url: str, json_path: str):
+def mapping(base_url: str, json_url: str):
     """메인 실행 함수"""
     target_height = 720
     seed_everything(42)
-    
+    print(base_url)
     web_navigator = WebNavigator(base_url=base_url)
     
     try:
         # 1. 이미지 처리
-        root_img, web_img, frames = process_images(json_path, web_navigator, target_height)
+        root_img, web_img, frames = process_images(json_url, web_navigator, target_height)
         
         # 2. 요소 추출
         matcher = ElementMatcher()
@@ -171,13 +175,14 @@ def mapping(base_url: str, json_path: str):
         
         # 4. 매칭 처리
         matches, _ = matcher.get_matches(sim_dict, figma_data[0]['boxes'], web_data[0]['boxes'], 0.8)
-        # visualizer = Visualizer()
-        # visualizer.visualize_matches(root_img, web_img, matches, "Matching Visualization")
+        visualizer = Visualizer()
         # 5. 매칭 결과 처리
         matches = process_matches(matches, web_navigator, frames)
+        visualizer.visualize_matches(root_img, web_img, matches, "Matching Visualization")
+
         # 6. 매핑 정보 생성
-        mapping_info = get_mapping_info(matches)
-        return mapping_info
+        mapping_infos = get_mapping_info(matches)
+        return mapping_infos
         
     finally:
         if web_navigator.driver is not None:

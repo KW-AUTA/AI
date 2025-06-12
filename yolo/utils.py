@@ -113,6 +113,9 @@ def get_figma_match_info(figma_infos: List[Dict], matches: List[MatchResult]) ->
             if iou > best_iou:
                 best_iou = iou
                 best_match = match
+
+        if best_iou < 0.1:
+            continue
         if best_match is not None:
             if 'interactions' in figma_info:
                 inters = figma_info.get('interactions', [])

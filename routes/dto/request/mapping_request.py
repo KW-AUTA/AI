@@ -3,4 +3,4 @@ from pydantic import BaseModel
 class MappingRequest(BaseModel):
     currentUrl: str
     currentPage: str
-    projectId: int
+    figmaUrl: str

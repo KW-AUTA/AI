@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 import cv2
+import os
 from scipy.optimize import linear_sum_assignment
 from ultralytics.nn.tasks import DetectionModel
 from torch.nn.modules.container import Sequential
@@ -36,8 +37,10 @@ class MatchResult:
 class ElementMatcher:
     """요소 매칭을 수행하는 클래스"""
     def __init__(self, yolo_model_path: str = None):
+        current_dir = os.path.dirname(__file__)
+        yolo_model_path = os.path.join(current_dir, "best.pt")
         if yolo_model_path is None:
-            yolo_model_path = '/Users/song-inseop/dev/AI-backend/AI/yolo/best.pt'
+            yolo_model_path = 'best.pt'
         # YOLO 모델 초기화
         self.yolo = YOLO(yolo_model_path, task='detect')
         # OCR 리더 초기화
