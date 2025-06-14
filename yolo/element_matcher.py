@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
 from ultralytics import YOLO
-import easyocr
+import pytesseract
 from difflib import SequenceMatcher
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
@@ -43,8 +43,10 @@ class ElementMatcher:
             yolo_model_path = 'best.pt'
         # YOLO 모델 초기화
         self.yolo = YOLO(yolo_model_path, task='detect')
-        # OCR 리더 초기화
-        self.reader = easyocr.Reader(['ko', 'en'])
+        
+        # Tesseract OCR 설정 - 경로 수정
+        pytesseract.pytesseract.tesseract_cmd = r'/opt/homebrew/bin/tesseract'  # M1 Mac 경로
+        self.config = '--oem 3 --psm 6 -l kor+eng'  # 한글+영어 지원
         
         # 특징 추출 모델 초기화
         self.feature_extractor = self.yolo.model.model[:12]
@@ -54,7 +56,6 @@ class ElementMatcher:
         self.transform = T.Compose([
             T.Resize((512, 512)),
             T.ToTensor(),
-
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
@@ -68,16 +69,14 @@ class ElementMatcher:
         gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        # OCR 수행 (한국어 지원)
-        results = self.reader.readtext(binary)
+        # Tesseract OCR 수행
+        text = pytesseract.image_to_string(binary, config=self.config)
         
         # 텍스트 전처리
-        text = ' '.join([text for _, text, _ in results])
-        # 한글, 영문, 숫자, 공백만 남기고 제거
-        text = ''.join(c for c in text if c.isalnum() or c.isspace() or '\uAC00' <= c <= '\uD7A3')
         text = ' '.join(text.split())  # 연속된 공백 제거
+        text = ''.join(c for c in text if c.isalnum() or c.isspace() or '\uAC00' <= c <= '\uD7A3')
         
-        return text
+        return text.strip()
 
     def text_similarity(self, text1: str, text2: str) -> float:
         """두 텍스트의 유사도 계산 (텍스트 길이 고려)"""
@@ -116,8 +115,9 @@ class ElementMatcher:
         results = self.yolo(pil_img)[0]
         boxes = results.boxes.xyxy.cpu().numpy()
         scores = results.boxes.conf.cpu().numpy()
+        cls = results.boxes.cls.cpu().numpy()
         keep = scores >= conf_thresh
-        return boxes[keep][:max_det]
+        return boxes[keep][:max_det], cls[keep][:max_det]
 
     def compute_iou(self, boxA, boxB):
         """두 박스의 IoU 계산"""
@@ -316,6 +316,7 @@ class ElementMatcher:
         coordinate_sim_matrix = np.zeros(sim_dict['coordinate'].shape)
         sim_matrix = matrix.copy()
         max_sim = np.max(sim_matrix)
+
         while max_sim > min_similarity:
             # 2d argmax
             max_idx = np.unravel_index(np.argmax(sim_matrix), sim_matrix.shape)
@@ -352,42 +353,3 @@ class ElementMatcher:
         ) for i, j in box_fair]
 
         return matches, sim_matrix
-    
-
-    # def get_matches(self, sim_dict, figma_boxes, web_boxes, min_similarity: float = 0.8):
-    #     """헝가리안 알고리즘을 사용하여 최적의 매칭 결과를 반환합니다."""
-    #     # 유사도 행렬 계산
-    #     matrix = sim_dict['text'] * 0.4 + sim_dict['feature'] * 0.25 + sim_dict['size'] * 0.15 + sim_dict['coordinate'] * 0.2
-        
-    #     if matrix.size == 0 or np.max(matrix) < min_similarity:
-    #         return []
-
-    #     # 헝가리안 알고리즘 적용
-    #     # linear_sum_assignment는 최소 비용 매칭을 찾으므로, 유사도를 음수로 변환
-    #     row_indices, col_indices = linear_sum_assignment(-matrix)
-        
-    #     # 최소 유사도 임계값을 만족하는 매칭만 선택
-    #     valid_matches = [(i, j) for i, j in zip(row_indices, col_indices) if matrix[i, j] >= min_similarity]
-        
-    #     # 매칭 결과 생성
-    #     matches = []
-    #     for i, j in valid_matches:
-    #         match = MatchResult(
-    #             figma_id='',
-    #             figma_name='',
-    #             figma_box=tuple(figma_boxes[i]),
-    #             web_box=tuple(web_boxes[j]),
-    #             score=float(matrix[i, j]),
-    #             text_score=sim_dict['text'][i, j],
-    #             feature_score=sim_dict['feature'][i, j],
-    #             coordinate_score=sim_dict['coordinate'][i, j],
-    #             size_score=sim_dict['size'][i, j],
-    #             visual_score=matrix[i, j],
-    #             interaction='',
-    #             figma_dest='',
-    #             web_dest='',
-    #             errorCategories=[]
-    #         )
-    #         matches.append(match)
-
-    #     return matches, matrix
