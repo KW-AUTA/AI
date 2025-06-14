@@ -19,6 +19,7 @@ import torch
 import requests
 from routes.dto.response.mapping_response import MappingInfo, MappingResponse
 from typing import List, Dict, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor
 
 def seed_everything(seed: int = 42):
     """랜덤 시드 설정"""
@@ -74,9 +75,6 @@ def process_images(figma_url: str, web_navigator: WebNavigator, target_height: i
 
     frames = response.json()
     root = frames[0]
-    print('#########################')
-    print(root)
-    print('#########################')
     root_img = decode_base64_image(root['image'])
     
     web_img = web_navigator.capture_full_page_with_scroll(root_img, target_height)
@@ -98,20 +96,25 @@ def extract_elements(img: Image.Image, start_height: int, target_height: int, ma
         crop_img = img.crop((0, current_height, img.width, min(current_height + target_height, img.height)))
         
         # 박스 검출
-        temp_boxes = matcher.detect_boxes_yolo(crop_img)
+        temp_boxes, temp_cls = matcher.detect_boxes_yolo(crop_img)
         if len(temp_boxes) > 0:
             # 박스 좌표를 원본 이미지 기준으로 조정
             temp_boxes[:, 1] += current_height
             temp_boxes[:, 3] += current_height
             boxes = np.column_stack([temp_boxes[:, 0], temp_boxes[:, 1], temp_boxes[:, 2], temp_boxes[:, 3]])
             
-            # 각 박스에 대해 특징과 텍스트 추출
-            for box in boxes:
+            # 병렬 처리로 박스별 특징 및 텍스트 추출
+            def _process_box(box_cls_pair):
+                box, cls = box_cls_pair
                 feature = matcher.extract_features(crop_img, box)
-                text = matcher.extract_text(crop_img, box)
-                all_features.append(feature)
-                all_texts.append(text)
-                all_boxes.append(box)
+                text = matcher.extract_text(crop_img, box) if cls == 0 else ""
+                return feature, text, box
+
+            with ThreadPoolExecutor() as executor:
+                for feature, text, box in executor.map(_process_box, zip(boxes, temp_cls)):
+                    all_features.append(feature)
+                    all_texts.append(text)
+                    all_boxes.append(box)
         
         current_height += target_height
     
@@ -126,6 +129,7 @@ def calculate_similarity(matcher: ElementMatcher, figma_data: List[Dict], web_da
     text_sim, feature_sim, size_sim, coordinate_sim = \
         matcher.calculate_similarity(root_img, web_img, figma_data, web_data)
         
+    feature_sim = np.where(text_sim == -1.0, 0.0, feature_sim)
     return {
         'text': (text_sim - np.min(text_sim)) / (np.max(text_sim) - np.min(text_sim) + 1e-8),
         'feature': (feature_sim - np.min(feature_sim)) / (np.max(feature_sim) - np.min(feature_sim) + 1e-8),
@@ -145,7 +149,7 @@ def process_matches(matches: List[MatchResult], web_navigator: WebNavigator, fra
     for match in interaction_matches:
         center_x = float(match.web_box[0] + match.web_box[2]) / 2
         center_y = float(match.web_box[1] + match.web_box[3]) / 2
-
+        web_navigator.scroll_to_y(center_y)
         if web_navigator.driver is not None:
             element, xpath = web_navigator.get_element_at_coordinate_and_xpath(center_x, center_y)
             if element is not None and xpath is not None:
@@ -158,9 +162,9 @@ def mapping(base_url: str, json_url: str):
     """메인 실행 함수"""
     target_height = 720
     seed_everything(42)
-    print(base_url)
-    web_navigator = WebNavigator(base_url=base_url)
-    
+    web_navigator = WebNavigator(headless=True, base_url=base_url)
+    visualizer = Visualizer()
+
     try:
         # 1. 이미지 처리
         root_img, web_img, frames = process_images(json_url, web_navigator, target_height)
@@ -175,10 +179,10 @@ def mapping(base_url: str, json_url: str):
         
         # 4. 매칭 처리
         matches, _ = matcher.get_matches(sim_dict, figma_data[0]['boxes'], web_data[0]['boxes'], 0.8)
-        visualizer = Visualizer()
+        visualizer.visualize_matches(root_img, web_img, matches, "Matching Visualization")
+
         # 5. 매칭 결과 처리
         matches = process_matches(matches, web_navigator, frames)
-        visualizer.visualize_matches(root_img, web_img, matches, "Matching Visualization")
 
         # 6. 매핑 정보 생성
         mapping_infos = get_mapping_info(matches)

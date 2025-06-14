@@ -124,6 +124,11 @@ class WebNavigator:
 		# navigator.quit()
 		return web_img
 	
+	def scroll_to_y(self, y: int):
+		"""y 위치로 스크롤"""
+		self.driver.execute_script(f"window.scrollTo(0, {y});")
+		time.sleep(1)
+
 	def get_element_xpath(self, driver, element):
 		"""
 		주어진 WebElement의 절대 XPath를 생성하여 반환합니다.
