@@ -45,6 +45,7 @@ pydantic_core==2.33.2
 PyMySQL==1.1.1
 pyparsing==3.2.3
 PySocks==1.7.1
+pytesseract==0.3.13
 python-bidi==0.6.6
 python-dateutil==2.9.0.post0
 python-dotenv==1.1.0
