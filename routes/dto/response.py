@@ -12,3 +12,13 @@ class MappingInfo(BaseModel):
 
 class MappingResponse(BaseModel):
     mappings: List[MappingInfo]
+
+class InterActionInfo(BaseModel):
+    componentName: Optional[str]
+    expectedAction: Optional[str]
+    actualAction: Optional[str]
+    failReason: Optional[str]
+    isSuccess: bool
+
+class InterActionResponse(BaseModel):
+    interactions: List[InterActionInfo]
