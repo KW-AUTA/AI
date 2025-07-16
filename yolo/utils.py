@@ -20,10 +20,10 @@ def get_min_x(element: dict, min_val: float) -> float:
     """Figma 요소의 최소 x 좌표를 계산합니다."""
     if 'children' in element:
         for child in element['children']:
-            if child['type'] == 'FRAME':
+            if child['data']['type'] == 'FRAME':
                 min_val = min(min_val, get_min_x(child, min_val))
             else:
-                min_val = min(min_val, child['absoluteX'])
+                min_val = min(min_val, child['data']['absolutePosition']['x'])
     return min_val 
 
 
@@ -87,7 +87,7 @@ def frame_to_dict(
     return anns
 
 
-def get_figma_match_info(figma_infos: List[Dict], matches: List[MatchResult]) -> List[MatchResult]:
+def get_figma_match_info(matches: List[MatchResult]) -> List[MatchResult]:
     """
     interaction_list: 각 노드별 인터랙션 정보(dict)
     matches: 이미 매칭된 MatchResult 객체들이 담긴 리스트
@@ -95,7 +95,7 @@ def get_figma_match_info(figma_infos: List[Dict], matches: List[MatchResult]) ->
     """
     interaction_match: List[MatchResult] = []
 
-    for figma_info in figma_infos:
+    for figma_info in matches.figma:
         # 1) 이 인터랙션의 bounding box 좌표 계산
         int_x1 = figma_info['x']
         int_y1 = figma_info['y']
@@ -108,12 +108,11 @@ def get_figma_match_info(figma_infos: List[Dict], matches: List[MatchResult]) ->
 
         for match in matches:
             # match.figma_box가 (x1, y1, x2, y2)인지 확인
-            f_x1, f_y1, f_x2, f_y2 = match.figma_box
+            f_x1, f_y1, f_x2, f_y2 = match.figma_element.box
             iou = get_iou((int_x1, int_y1, int_x2, int_y2), (f_x1, f_y1, f_x2, f_y2))
             if iou > best_iou:
                 best_iou = iou
                 best_match = match
-
         if best_iou < 0.1:
             continue
         if best_match is not None:

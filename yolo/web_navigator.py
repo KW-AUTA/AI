@@ -187,42 +187,39 @@ class WebNavigator:
 		xpath = self.get_element_xpath(self.driver, element)
 		return element, xpath
 
-	def get_url_in_new_tab(self, xpath: str, wait_sec: float = 1.0) -> str:
+
+	def get_url_in_new_tab(self, xpath: str, wait_sec: float = 1.5) -> str:
 		"""
-		1) driver: 이미 ChromeDriver가 실행되어 있고, 원하는 페이지가 로드된 상태여야 합니다.
-		2) xpath: 새 탭으로 열고자 하는 링크(<a>)나 버튼 등의 요소를 찾기 위한 XPath 문자열.
-		3) wait_sec: 새 탭이 열리고 로딩된 뒤 URL을 가져오기 위해 잠시 대기할 시간(초).
-		
-		반환값: 새 탭으로 연 페이지의 URL 문자열. 실패 시 빈 문자열("") 반환.
+		1) xpath: 새 탭으로 열 요소(<a> 등)의 XPath
+		2) wait_sec: 페이지 로딩을 위해 대기할 시간(초)
+		반환값: 새 탭으로 연 페이지의 URL, 실패 시 빈 문자열
 		"""
-		# 1) 먼저 해당 요소를 찾는다
+		# 1) 요소 찾기 및 화면 중앙으로 스크롤
 		elem = self.driver.find_element(By.XPATH, xpath)
-
-		# 2) 요소에 href 속성이 있으면 그걸 따로 꺼내서 window.open으로 열기
-		href = elem.get_attribute("href")
-		if href:
-				# 새 탭 열기
-				self.driver.execute_script("window.open(arguments[0], '_blank');", href)
-		else:
-				# href가 없으면, Ctrl+Click 으로 새 탭 열기 시도
-				elem.send_keys(Keys.CONTROL + Keys.RETURN)
-
-		# 3) 새 탭이 떠서 로드될 시간을 잠시 준다
+		self.driver.execute_script(
+			"arguments[0].scrollIntoView({block: 'center'});", elem
+		)
 		time.sleep(wait_sec)
 
-		# 4) 현재 열린 모든 창(탭) 핸들 목록을 가져와서, 새 탭 핸들로 전환
+		# 2) Ctrl+Click으로 새 탭 열기
+		actions = ActionChains(self.driver)
+		actions.key_down(Keys.COMMAND).click(elem).key_up(Keys.COMMAND).perform()
+
+		# 3) 새 탭이 뜰 때까지 잠시 대기
+		time.sleep(wait_sec)
+
+		# 4) 탭 핸들 목록에서 마지막 핸들(새 탭)로 전환
 		handles = self.driver.window_handles
 		if len(handles) < 2:
-				# 새 탭이 열리지 않았다면 빈 문자열 반환
-				return ""
+			return ""  # 새 탭이 안 열렸으면 빈 문자열 반환
 		new_tab = handles[-1]
 		self.driver.switch_to.window(new_tab)
 		time.sleep(wait_sec)
 
-		# 5) 새 탭의 URL을 가져오기
+		# 5) 새 탭 URL 읽어오기
 		new_tab_url = self.driver.current_url
 
-		# 6) 새 탭을 닫고, 원래 창(첫 번째 핸들)으로 다시 전환
+		# 6) 새 탭 닫고, 원래 탭으로 복귀
 		self.driver.close()
 		self.driver.switch_to.window(handles[0])
 
