@@ -44,12 +44,14 @@ def parse_llm_usability_report(reply: str):
         data = json.loads(json_text)
         return {
             "usability_score": data.get("usability_score", 0),
+            "frame_summary": data.get("frame_summary", ""),
             "problem_components": data.get("problem_components", [])
         }
     except Exception as e:
         print(f"[GPT 파싱 오류] {e}")
         return {
             "usability_score": 0,
+            "frame_summary": "",  # 에러 시 빈 문자열
             "problem_components": []
         }
 
@@ -113,6 +115,7 @@ def generate_prompt_with_id(task_desc, ui_summary, persona=None):
     ```json
     {{
       "usability_score": int,  // 전체 평가 점수 (0~100)
+      "frame_summary": "string",  // 프레임 전체에 대한 한 문장 요약 (예: 버튼 배치가 과도하게 밀집되어 사용자가 실수하기 쉬움)
       "problem_components": [
         {{
           "id": "string",
@@ -122,6 +125,7 @@ def generate_prompt_with_id(task_desc, ui_summary, persona=None):
         }}
       ]
     }}
+    ```
 
     주의사항
     - JSON 외 텍스트는 절대 출력하지 마세요.

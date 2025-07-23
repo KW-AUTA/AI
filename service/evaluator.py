@@ -84,8 +84,7 @@ async def evaluate_all_frames_logic(figma_url: str):
             # 전체 점수 리스트에 추가
             scores.append(evaluation["usability_score"])
             results.append({
-                "frame_name": frame.get("name", "Unnamed Frame"),
-                "problem_components": evaluation["problem_components"],
+                "frame_summary": evaluation["frame_summary"],
                 "highlight_image_url": f"/static/{unique_id}/{filename}"
             })
         except Exception as e:
@@ -93,7 +92,7 @@ async def evaluate_all_frames_logic(figma_url: str):
                 "frame_name": frame.get("name", "Unnamed Frame"),
                 "error": str(e)
             })
-        break
+
 
     overall_score = round(sum(scores) / len(scores), 2) if scores else 0.0
     return {
