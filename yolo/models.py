@@ -82,7 +82,7 @@ class FigmaElement:
 class WebElement:
     xpath: str
 
-@dataclass(kw_only=True, frozen=True, slots=True)
+@dataclass(kw_only=True, frozen=False, slots=True)
 class ExtractedElement:
     box:        np.ndarray
     feature:    torch.Tensor
@@ -98,6 +98,7 @@ class ReturnMatch:
     failReason: str
     isSuccess: bool
     isRouting: bool
+
 @dataclass(kw_only=True, frozen=True, slots=True)
 class FigmaFare:
     id: str

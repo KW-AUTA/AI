@@ -7,15 +7,14 @@ import torchvision.ops
 import torchvision.transforms as T
 from torchvision.transforms.functional import pad
 from ultralytics import YOLO
-import pytesseract
+import tesserocr
 from difflib import SequenceMatcher
 from typing import List, Tuple, Optional, Any, Dict
 import cv2
 import os
 from scipy.optimize import linear_sum_assignment
 from .models import FigmaFare, ExtractedElement
-
-
+from .errorChecker import ErrorChecker
 # Letterbox function: resize and pad image to meet new_shape, maintaining aspect ratio.
 def letterbox(im, new_shape=(640, 640), color=(114, 114, 114)):
     """
@@ -89,14 +88,17 @@ class ElementExtractor:
     """요소 매칭을 수행하는 클래스"""
     def __init__(self, yolo_model_path: str = None, resize_size: Tuple[int, int] = (736, 736)):
         current_dir = os.path.dirname(__file__)
-        yolo_model_path = os.path.join(current_dir, "best.pt")
         if yolo_model_path is None:
-            yolo_model_path = 'best.pt'
+            yolo_model_path = os.path.join(current_dir, "best.pt")
         self.yolo = YOLO(yolo_model_path, task='detect', verbose=False)
         self.resize_size = resize_size
-        pytesseract.pytesseract.tesseract_cmd = r'/usr/local/bin/tesseract'
-        self.config = '--oem 3 --psm 6 -l kor+eng'
-        
+        # tesserocr 설정
+        tessdata_dir = "/usr/local/share/tessdata"
+        self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
+        self.api.SetPageSegMode(tesserocr.PSM.SINGLE_BLOCK)
+        self.api.SetVariable("tessedit_char_whitelist", "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz가-힣 ")
+        self.api.SetVariable("user_defined_dpi", "300")
+            
         self.feature_extractor = self.yolo.model.model[:11]
         self.feature_extractor.eval()
         
@@ -106,6 +108,11 @@ class ElementExtractor:
             T.ToTensor(),
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
+
+    def __del__(self):
+        """tesserocr API 정리"""
+        if hasattr(self, 'api'):
+            self.api.End()
 
     def extract_text(self, img: Image.Image, box: np.ndarray) -> str:
         x1, y1, x2, y2 = map(int, box)
@@ -119,7 +126,10 @@ class ElementExtractor:
         enhanced = clahe.apply(denoised)
         
         _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        text = pytesseract.image_to_string(binary, config=self.config)
+        # tesserocr 사용
+        binary_pil = Image.fromarray(binary)
+        self.api.SetImage(binary_pil)
+        text = self.api.GetUTF8Text()
         text = ' '.join(text.split())
         text = ''.join(c for c in text if c.isalnum() or c.isspace() or '\uAC00' <= c <= '\uD7A3')
         return text.strip()
@@ -149,16 +159,14 @@ class ElementExtractor:
             ImageFilter.UnsharpMask(radius=2, percent=200, threshold=1)
         )
 
-        # 2) Letterbox: 종횡비 유지 + padding 계산
-        img_np = np.array(pil_img)  # H×W×C, RGB
-        img_letter, ratio, (pad_x, pad_y) = letterbox(
-            img_np,
-            new_shape=resize_size,
-            color=(114, 114, 114)
-        )
+        # 2) 단순 리사이즈 (종횡비 유지 제거)
+        img_resized = pil_img.resize(resize_size, Image.Resampling.LANCZOS)
+        img_np = np.array(img_resized)  # H×W×C, RGB
+        
         # BGR, float32, [0–1]
-        img_input = img_letter[..., ::-1].astype(np.float32) / 255.0
+        img_input = img_np[..., ::-1].astype(np.float32) / 255.0
         img_input = torch.from_numpy(img_input).permute(2, 0, 1).unsqueeze(0)
+        
         # 3) Hook backbone to extract feature map during inference
         feat_map = None
         feature_map_storage = []
@@ -181,11 +189,12 @@ class ElementExtractor:
             handle.remove()
             feat_map = feature_map_storage[0]
 
-        # 5) 박스 역변환 (패딩 제거 → 비율로 복원)
+        # 5) 박스 좌표 복원 (단순 스케일링)
         boxes = results.boxes.xyxy.cpu().numpy().copy()
-        boxes[:, [0, 2]] -= pad_x
-        boxes[:, [1, 3]] -= pad_y
-        boxes /= ratio
+        scale_x = orig_w / resize_size[1]
+        scale_y = orig_h / resize_size[0]
+        boxes[:, [0, 2]] *= scale_x
+        boxes[:, [1, 3]] *= scale_y
 
         scores = results.boxes.conf.cpu().numpy()
         classes = results.boxes.cls.cpu().numpy()
@@ -448,7 +457,7 @@ class ElementExtractor:
                 size_similarity=sim_dict['size'][i, j],
                 coordinate_similarity=sim_dict['coordinate'][i, j],
                 score=float(matrix[i, j]),
-                errorCategories=[]
+                errorCategories=ErrorChecker().check_error(figma_element.extracted.box, web_element.box, figma_element.extracted.text, web_element.text)
             )
             matches.append(match_result)
         return matches, matrix

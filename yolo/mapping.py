@@ -107,16 +107,26 @@ def process_images(figma_url: str, web_navigator: WebNavigator, target_height: i
     logging.info("Finished processing images.")
     return frame_img, web_img, frames
 
+def extract_texts(img: Image.Image, matcher: ElementExtractor, boxes: List[Tuple[int, int, int, int]]) -> List[str]:
+    """기존 순차 처리 방식으로 텍스트 추출"""
+    texts = []
+    for box in boxes:
+        text_margin = 10
+        margin_box = (box[0] - text_margin, box[1] - text_margin, box[2] + text_margin, box[3] + text_margin)
+        text = matcher.extract_text(img, margin_box)
+        texts.append(text)
+    return texts
+
 def extract_elements(img: Image.Image, start_height: int, windowing_height: int, matcher: ElementExtractor, iou_threshold: float = 0.5) -> List[ExtractedElement]:
     """이미지에서 요소 추출 (순차 처리 버전)"""
     logging.info(f"Extracting elements from image with height {img.height} using sequential windowing...")
-
+    
     windows_to_process = []
     current_height = 0
     while current_height < img.height:
         crop_img = img.crop((0, current_height, img.width, min(current_height + windowing_height, img.height)))
         windows_to_process.append((crop_img, current_height))
-        current_height += windowing_height // 2
+        current_height += windowing_height * 0.75
 
     all_boxes = []
     all_scores = []
@@ -137,6 +147,8 @@ def extract_elements(img: Image.Image, start_height: int, windowing_height: int,
         boxes[:, 3] += original_height
         
         return boxes, scores, cls, features
+    logging.info(f"Processing {len(windows_to_process)} windows...")
+    start_time = time.time()
     for crop_img, h in windows_to_process:
         boxes, scores, cls, features = process_window(crop_img, h)
         if boxes is not None:
@@ -144,7 +156,8 @@ def extract_elements(img: Image.Image, start_height: int, windowing_height: int,
             all_scores.append(scores)
             all_cls.append(cls)
             all_features.append(features)
-
+    end_time = time.time()
+    logging.info(f"Time taken: {end_time - start_time} seconds for figma extraction")
 
     if not all_boxes:
         logging.info("No elements were extracted.")
@@ -156,26 +169,16 @@ def extract_elements(img: Image.Image, start_height: int, windowing_height: int,
     final_cls = np.concatenate(all_cls)
     final_features = np.vstack(all_features)
 
-
-
     nms_boxes = final_boxes
     nms_cls = final_cls
     nms_features = final_features
-    logging.info(f"Kept {len(nms_boxes)} boxes after NMS.")
-
-    # OCR 순차 처리
+    
     extracted_elements = []
     if nms_boxes.size > 0:
         for i, box in enumerate(nms_boxes):
-            try:
-                text_margin = 10
-                margin_box = (box[0] - text_margin, box[1] - text_margin, box[2] + text_margin, box[3] + text_margin)
-                text = matcher.extract_text(img, margin_box)
-                feature = nms_features[i]
-                cls = nms_cls[i]
-                extracted_elements.append(ExtractedElement(box=box, feature=feature, text=text, cls=cls))
-            except Exception as exc:
-                logging.error(f'OCR for box {box} generated an exception: {exc}')
+            feature = nms_features[i]
+            cls = nms_cls[i]
+            extracted_elements.append(ExtractedElement(box=box, feature=feature, text=None, cls=cls))
 
     logging.info(f"Extracted and filtered {len(extracted_elements)} elements.")
     return extracted_elements
@@ -524,8 +527,6 @@ def tree_to_mermaid(root, name_map=None):
     recurse(root)
     return "\n".join(lines)
 
-
-
 def get_img_by_id(id: str, figma_raw: List[Dict]) -> Image.Image:
     for figma_element in figma_raw:
         if figma_element['data']['id'] == id:
@@ -537,6 +538,58 @@ def get_img_by_id(id: str, figma_raw: List[Dict]) -> Image.Image:
     return None
 
 
+def categorize_match(match: MatchResult) -> List[str]:
+    """매칭된 요소들을 카테고리별로 분류"""
+    category = []
+    if abs(match.figma.extracted.box[0] - match.web.box[0]) > 10:
+        category.append('different_x')
+    if abs(match.figma.extracted.box[1] - match.web.box[1]) > 10:
+        category.append('different_y')
+    
+    w_f = match.figma.extracted.box[2] - match.figma.extracted.box[0]    
+    h_f = match.figma.extracted.box[3] - match.figma.extracted.box[1]
+    w_w = match.web.box[2] - match.web.box[0]
+    h_w = match.web.box[3] - match.web.box[1]
+
+    if abs(w_f - w_w) > 10 or abs(h_f - h_w) > 10:
+        category.append('different_size')
+    
+    if len(category) == 0:
+        category.append('same')
+    
+    logging.debug(f"Categorized match for : {category}")
+    return category
+
+
+def extract_elements_worker(args):
+    """스레드 안전한 요소 추출 워커"""
+    image, target_height, task_name = args
+    
+    try:
+        logging.info(f"🔥 Starting {task_name} elements extraction...")
+        start_time = time.time()
+        
+        # 각 워커마다 새로운 matcher 인스턴스 생성
+        local_matcher = ElementExtractor(resize_size=(1024, 1024))
+        extracted_elements = extract_elements(image, 0, target_height, local_matcher)
+        
+        end_time = time.time()
+        logging.info(f"✅ {task_name} elements extraction completed: {end_time - start_time:.2f} seconds")
+        logging.info(f"{task_name} elements extracted: {len(extracted_elements)}")
+        
+        return extracted_elements
+        
+    except Exception as e:
+        logging.error(f"❌ Error in {task_name} elements extraction: {e}")
+        raise e
+
+def extract_elements_parallel(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor):
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        figma_future = executor.submit(extract_elements_worker, (figma_image, 720, matcher))
+        web_future = executor.submit(extract_elements_worker, (web_image, 720, matcher))
+        figma_extracted = figma_future.result()
+        web_extracted = web_future.result()
+    return figma_extracted, web_extracted
 
 def mapping(base_url: str, json_url: str):
     """메인 실행 함수"""
@@ -556,25 +609,46 @@ def mapping(base_url: str, json_url: str):
         figma_raw, figma_interactions = load_figma_data(json_url)
 
         root_image = get_img_by_id(figma_raw[0]['data']['id'], figma_raw)
-
         figma_tree = convert_raw_to_tree(figma_raw[0], root_image, matcher)
+
+
+        # logging.info("Start Web page capturing...")
+        # web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
+        # logging.info("finished web page capturing\n")
+
+        # logging.info("Start Figma elements extracting...")
+        # start_time = time.time()
+        # figma_extracted, web_extracted = extract_elements_parallel(root_image, web_img, matcher)
+        # end_time = time.time()
+        # logging.info(f"Time taken: {end_time - start_time} seconds for figma elements extracting\n")
+        # logging.info(f"Figma elements extracted: {len(figma_extracted)}")
+        # logging.info(f"Web elements extracted: {len(web_extracted)}")
+
+        
 
         logging.info("Start Figma elements extracting...")
         figma_extracted = extract_elements(root_image, 0, target_height, matcher)
         logging.info(f"Figma elements extracted: {len(figma_extracted)}")        
         fare_figma = fare_figma_extracted(figma_tree, figma_extracted, figma_interactions)
-
+        logging.info(f'Start OCR for figma elements')
+        start_time = time.time()
+        for f in fare_figma:
+            f.extracted.text = extract_texts(root_image, matcher, [f.extracted.box])[0]
+        end_time = time.time()
+        logging.info(f"Time taken: {end_time - start_time} seconds for OCR")
         figma_extracted_boxes = [f.extracted.box for f in fare_figma]
-        visualizer.visualize_boxes(root_image, figma_extracted_boxes, "Figma elements extracted")
+        # visualizer.visualize_boxes(root_image, figma_extracted_boxes, "Figma elements extracted")
 
-        logging.info("Start Web page capturing...")
-        web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
         logging.info("Start Web elements extracting...")
         web_extracted = extract_elements(web_img, 0, target_height, matcher)
-
+        logging.info(f'Start OCR for web elements')
+        start_time = time.time()
+        for e in web_extracted:
+            e.text = extract_texts(web_img, matcher, [e.box])[0]
+        end_time = time.time()
+        logging.info(f"Time taken: {end_time - start_time} seconds for OCR")
         web_extracted_boxes = [e.box for e in web_extracted]
-        visualizer.visualize_boxes(web_img, web_extracted_boxes, "Web elements extracted")
-
+        # visualizer.visualize_boxes(web_img, web_extracted_boxes, "Web elements extracted")
         logging.info(f"Web elements extracted: {len(web_extracted)}")
 
         logging.info("Step 3: Separating Figma elements based on interactions")
@@ -586,6 +660,7 @@ def mapping(base_url: str, json_url: str):
         logging.info("Step 4a: Matching elements WITH interactions")
         sim_dict_interaction = matcher.calculate_similarity(root_image, web_img, fare_figma_interaction, web_extracted)
         matches_interaction, _ = matcher.get_matches(sim_dict_interaction, fare_figma_interaction, web_extracted, 0.8)
+        
         logging.info(f"Found {len(matches_interaction)} matches for interaction elements.")
 
         # Get the web elements that have been matched
