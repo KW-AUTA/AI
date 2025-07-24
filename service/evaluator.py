@@ -74,8 +74,7 @@ async def evaluate_all_frames_logic(figma_url: str):
                 y2 = (el["absoluteY"] + el["height"] - origin_y) * scale_y
                 draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
 
-            timestamp = datetime.now().strftime("%H%M%S_%f")
-            filename = f"{frame['name'].replace(' ', '_')}_{timestamp}.png"
+            filename = f"{uuid.uuid4().hex}.png"
             save_path = save_dir / filename
             image.save(save_path, format="PNG")
 
@@ -84,8 +83,8 @@ async def evaluate_all_frames_logic(figma_url: str):
             # 전체 점수 리스트에 추가
             scores.append(evaluation["usability_score"])
             results.append({
-                "frame_summary": evaluation["frame_summary"],
-                "highlight_image_url": f"/static/{unique_id}/{filename}"
+                "frameSummary": evaluation["frame_summary"],
+                "highlightImageUrl": f"/static/{unique_id}/{filename}"
             })
         except Exception as e:
             results.append({
@@ -96,7 +95,7 @@ async def evaluate_all_frames_logic(figma_url: str):
 
     overall_score = round(sum(scores) / len(scores), 2) if scores else 0.0
     return {
-        "usability_score": int(overall_score),
+        "usabilityScore": int(overall_score),
         "evaluations": results
     }
 
