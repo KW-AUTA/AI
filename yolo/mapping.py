@@ -13,7 +13,8 @@ import torch
 import requests
 from routes.dto.response import MappingInfo, InterActionInfo
 from typing import List, Dict, Tuple, Optional, Set
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import multiprocessing
 from .tree_loader import TreeNode
 from contextlib import contextmanager
 import concurrent.futures
@@ -583,15 +584,269 @@ def extract_elements_worker(args):
         logging.error(f"❌ Error in {task_name} elements extraction: {e}")
         raise e
 
+# 🔧 멀티프로세싱용 전역 변수
+_global_matcher = None
+
+def init_extraction_worker():
+    """멀티프로세싱 워커 초기화 - 각 프로세스마다 YOLO 모델 로드 (CPU 모드)"""
+    global _global_matcher
+    try:
+        import torch
+        import os
+        
+        # GPU 사용 비활성화 - 이것이 핵심!
+        torch.cuda.set_device(-1)  # CPU 모드 강제
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''  # GPU 숨기기
+        
+        logging.info("🔧 Initializing YOLO model in worker process (CPU mode)...")
+        _global_matcher = ElementExtractor(resize_size=(1024, 1024))
+        
+        # YOLO 모델을 CPU 모드로 강제 설정
+        _global_matcher.yolo.model.to('cpu')
+        
+        logging.info("✅ YOLO model initialized in worker process (CPU mode)")
+    except Exception as e:
+        logging.error(f"❌ Error initializing worker: {e}")
+        raise e
+
+
+def extract_elements_mp_worker(args):
+    """멀티프로세싱용 요소 추출 워커"""
+    image_data, target_height, task_name = args
+    global _global_matcher
+    
+    try:
+        logging.info(f"🔥 Starting {task_name} elements extraction in process...")
+        start_time = time.time()
+        
+        # 이미지 데이터를 PIL Image로 변환
+        if isinstance(image_data, bytes):
+            import io
+            image = Image.open(io.BytesIO(image_data))
+        else:
+            image = image_data
+        
+        # 전역 matcher 사용
+        extracted_elements = extract_elements(image, 0, target_height, _global_matcher)
+        
+        end_time = time.time()
+        logging.info(f"✅ {task_name} elements extraction completed: {end_time - start_time:.2f} seconds")
+        logging.info(f"{task_name} elements extracted: {len(extracted_elements)}")
+        
+        return extracted_elements
+        
+    except Exception as e:
+        logging.error(f"❌ Error in {task_name} elements extraction: {e}")
+        raise e
+
+
+def extract_elements_multiprocessing(figma_image: Image.Image, web_image: Image.Image, target_height: int = 720) -> Tuple[List[ExtractedElement], List[ExtractedElement]]:
+    """
+    멀티프로세싱을 사용한 요소 추출
+    Figma 요소 추출 + Web 요소 추출을 동시에 처리
+    """
+    logging.info("🚀 Starting multiprocessing elements extraction...")
+    
+    # 이미지를 bytes로 변환 (프로세스 간 전달용)
+    import io
+    
+    # Figma 이미지를 bytes로 변환
+    figma_buffer = io.BytesIO()
+    figma_image.save(figma_buffer, format='PNG')
+    figma_data = figma_buffer.getvalue()
+    
+    # Web 이미지를 bytes로 변환
+    web_buffer = io.BytesIO()
+    web_image.save(web_buffer, format='PNG')
+    web_data = web_buffer.getvalue()
+    
+    # 멀티프로세싱으로 요소 추출
+    start_time = time.time()
+    
+    with ProcessPoolExecutor(max_workers=2, initializer=init_extraction_worker) as executor:
+        # Figma와 Web 요소 추출을 동시에
+        figma_future = executor.submit(extract_elements_mp_worker, (figma_data, target_height, "Figma"))
+        web_future = executor.submit(extract_elements_mp_worker, (web_data, target_height, "Web"))
+        
+        # 결과 수집
+        figma_extracted = figma_future.result()
+        web_extracted = web_future.result()
+    
+    end_time = time.time()
+    logging.info(f"🎯 Multiprocessing elements extraction completed: {end_time - start_time:.2f} seconds")
+    
+    return figma_extracted, web_extracted
+
+
 def extract_elements_parallel(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor):
+    """기존 ThreadPoolExecutor 버전 (백업용)"""
     with ThreadPoolExecutor(max_workers=2) as executor:
-        figma_future = executor.submit(extract_elements_worker, (figma_image, 720, matcher))
-        web_future = executor.submit(extract_elements_worker, (web_image, 720, matcher))
+        figma_future = executor.submit(extract_elements_worker, (figma_image, 720, matcher, "Figma"))
+        web_future = executor.submit(extract_elements_worker, (web_image, 720, matcher, "Web"))
         figma_extracted = figma_future.result()
         web_extracted = web_future.result()
     return figma_extracted, web_extracted
 
-def mapping(base_url: str, json_url: str):
+def test_extraction_methods_performance(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor) -> Dict[str, float]:
+    """
+    다양한 요소 추출 방법의 성능 비교
+    """
+    results = {}
+    target_height = 720
+    
+    # 1. 순차 처리 테스트
+    logging.info("🔬 Testing sequential extraction...")
+    start_time = time.time()
+    figma_seq = extract_elements(figma_image, 0, target_height, matcher)
+    web_seq = extract_elements(web_image, 0, target_height, matcher)
+    sequential_time = time.time() - start_time
+    results['sequential'] = sequential_time
+    
+    # 2. 스레딩 테스트 (기존)
+    logging.info("🔬 Testing threading extraction...")
+    start_time = time.time()
+    try:
+        figma_threading, web_threading = extract_elements_parallel(figma_image, web_image, matcher)
+        threading_time = time.time() - start_time
+        results['threading'] = threading_time
+    except Exception as e:
+        logging.warning(f"Threading failed: {e}")
+        results['threading'] = float('inf')
+    
+    # 3. 멀티프로세싱 테스트
+    logging.info("🔬 Testing multiprocessing extraction...")
+    start_time = time.time()
+    figma_mp, web_mp = extract_elements_multiprocessing(figma_image, web_image, target_height)
+    multiprocessing_time = time.time() - start_time
+    results['multiprocessing'] = multiprocessing_time
+    
+    # 결과 출력
+    logging.info(f"📊 Extraction Performance Comparison:")
+    logging.info(f"  Sequential:      {sequential_time:.2f}s")
+    logging.info(f"  Threading:       {results.get('threading', 'FAILED')}")
+    logging.info(f"  Multiprocessing: {multiprocessing_time:.2f}s")
+    
+    if results['threading'] != float('inf'):
+        threading_speedup = sequential_time / results['threading']
+        logging.info(f"  Threading Speedup:       {threading_speedup:.2f}x")
+    
+    mp_speedup = sequential_time / multiprocessing_time
+    logging.info(f"  Multiprocessing Speedup: {mp_speedup:.2f}x")
+    
+    return results
+
+
+def analyze_multiprocessing_overhead(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor) -> Dict[str, float]:
+    """
+    멀티프로세싱 오버헤드 세부 분석
+    """
+    import io
+    target_height = 720
+    overhead_analysis = {}
+    
+    logging.info("🔬 Analyzing multiprocessing overhead...")
+    
+    # 1. 이미지 직렬화 시간 측정
+    logging.info("📦 Measuring image serialization overhead...")
+    start_time = time.time()
+    
+    figma_buffer = io.BytesIO()
+    figma_image.save(figma_buffer, format='PNG')
+    figma_data = figma_buffer.getvalue()
+    
+    web_buffer = io.BytesIO()
+    web_image.save(web_buffer, format='PNG')
+    web_data = web_buffer.getvalue()
+    
+    serialization_time = time.time() - start_time
+    overhead_analysis['serialization'] = serialization_time
+    logging.info(f"  Serialization time: {serialization_time:.2f}s")
+    
+    # 2. 이미지 역직렬화 시간 측정
+    logging.info("📥 Measuring image deserialization overhead...")
+    start_time = time.time()
+    
+    figma_restored = Image.open(io.BytesIO(figma_data))
+    web_restored = Image.open(io.BytesIO(web_data))
+    
+    deserialization_time = time.time() - start_time
+    overhead_analysis['deserialization'] = deserialization_time
+    logging.info(f"  Deserialization time: {deserialization_time:.2f}s")
+    
+    # 3. YOLO 모델 로딩 시간 측정
+    logging.info("🔧 Measuring YOLO model loading overhead...")
+    start_time = time.time()
+    
+    new_matcher = ElementExtractor(resize_size=(1024, 1024))
+    
+    model_loading_time = time.time() - start_time
+    overhead_analysis['model_loading'] = model_loading_time
+    logging.info(f"  Model loading time: {model_loading_time:.2f}s")
+    
+    # 4. 프로세스 생성 오버헤드 추정
+    logging.info("⚡ Measuring process creation overhead...")
+    start_time = time.time()
+    
+    def dummy_worker(x):
+        return x * 2
+    
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        future1 = executor.submit(dummy_worker, 1)
+        future2 = executor.submit(dummy_worker, 2)
+        future1.result()
+        future2.result()
+    
+    process_creation_time = time.time() - start_time
+    overhead_analysis['process_creation'] = process_creation_time
+    logging.info(f"  Process creation time: {process_creation_time:.2f}s")
+    
+    # 5. 총 오버헤드 계산
+    total_overhead = (serialization_time + deserialization_time + 
+                     model_loading_time * 2 + process_creation_time)  # 모델 로딩은 2개 프로세스
+    overhead_analysis['total_estimated'] = total_overhead
+    
+    logging.info(f"📊 Overhead Analysis Summary:")
+    logging.info(f"  Serialization:     {serialization_time:.2f}s")
+    logging.info(f"  Deserialization:   {deserialization_time:.2f}s") 
+    logging.info(f"  Model Loading x2:  {model_loading_time * 2:.2f}s")
+    logging.info(f"  Process Creation:  {process_creation_time:.2f}s")
+    logging.info(f"  Total Estimated:   {total_overhead:.2f}s")
+    
+    return overhead_analysis
+
+
+def test_overhead_optimization(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor) -> Dict[str, float]:
+    """
+    오버헤드 최적화 테스트
+    """
+    results = {}
+    target_height = 720
+    
+    # 1. 기본 멀티프로세싱
+    logging.info("🔬 Testing baseline multiprocessing...")
+    start_time = time.time()
+    figma_mp, web_mp = extract_elements_multiprocessing(figma_image, web_image, target_height)
+    baseline_time = time.time() - start_time
+    results['baseline_mp'] = baseline_time
+    
+    # 2. 오버헤드 분석
+    overhead_analysis = analyze_multiprocessing_overhead(figma_image, web_image, matcher)
+    results.update(overhead_analysis)
+    
+    # 3. 실제 vs 예상 오버헤드 비교
+    sequential_time_estimated = baseline_time - overhead_analysis['total_estimated']
+    results['estimated_pure_work'] = sequential_time_estimated
+    
+    logging.info(f"🎯 Overhead Optimization Analysis:")
+    logging.info(f"  Baseline MP time:    {baseline_time:.2f}s")
+    logging.info(f"  Estimated overhead:  {overhead_analysis['total_estimated']:.2f}s")
+    logging.info(f"  Estimated pure work: {sequential_time_estimated:.2f}s")
+    logging.info(f"  Overhead percentage: {(overhead_analysis['total_estimated'] / baseline_time * 100):.1f}%")
+    
+    return results
+
+
+def mapping(base_url: str, json_url: str, test_performance: bool = False):
     """메인 실행 함수"""
     logging.info(f"Starting mapping process for base_url: {base_url} and json_url: {json_url}")
     target_height = 720
@@ -612,24 +867,30 @@ def mapping(base_url: str, json_url: str):
         figma_tree = convert_raw_to_tree(figma_raw[0], root_image, matcher)
 
 
-        # logging.info("Start Web page capturing...")
-        # web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
-        # logging.info("finished web page capturing\n")
-
-        # logging.info("Start Figma elements extracting...")
-        # start_time = time.time()
-        # figma_extracted, web_extracted = extract_elements_parallel(root_image, web_img, matcher)
-        # end_time = time.time()
-        # logging.info(f"Time taken: {end_time - start_time} seconds for figma elements extracting\n")
-        # logging.info(f"Figma elements extracted: {len(figma_extracted)}")
-        # logging.info(f"Web elements extracted: {len(web_extracted)}")
-
-        
+        logging.info("Start Web page capturing...")
+        web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
+        logging.info("finished web page capturing\n")
 
         logging.info("Start Figma elements extracting...")
-        figma_extracted = extract_elements(root_image, 0, target_height, matcher)
+        start_time = time.time()
+        # 성능 테스트 실행 (옵션)
+        if test_performance:
+            logging.info("🔬 Running extraction methods performance comparison...")
+            performance_results = test_extraction_methods_performance(root_image, web_img, matcher)
+            logging.info(f"Performance test completed. Results: {performance_results}")
+        
+        # 🚀 안전한 멀티프로세싱을 사용한 병렬 요소 추출 (GPU 락 방지)
+        logging.info("🔥 Using SAFE multiprocessing for parallel extraction (CPU mode)...")
+        figma_extracted, web_extracted = extract_elements_multiprocessing_safe(root_image, web_img, target_height)
+        end_time = time.time()
+        logging.info(f"Time taken: {end_time - start_time} seconds for figma elements extracting\n")
+        logging.info(f"Figma elements extracted: {len(figma_extracted)}")
+        logging.info(f"Web elements extracted: {len(web_extracted)}")
+
         logging.info(f"Figma elements extracted: {len(figma_extracted)}")        
         fare_figma = fare_figma_extracted(figma_tree, figma_extracted, figma_interactions)
+        logging.info("finished figma elements extracting\n")
+
         logging.info(f'Start OCR for figma elements')
         start_time = time.time()
         for f in fare_figma:
@@ -638,9 +899,6 @@ def mapping(base_url: str, json_url: str):
         logging.info(f"Time taken: {end_time - start_time} seconds for OCR")
         figma_extracted_boxes = [f.extracted.box for f in fare_figma]
         # visualizer.visualize_boxes(root_image, figma_extracted_boxes, "Figma elements extracted")
-
-        logging.info("Start Web elements extracting...")
-        web_extracted = extract_elements(web_img, 0, target_height, matcher)
         logging.info(f'Start OCR for web elements')
         start_time = time.time()
         for e in web_extracted:
@@ -699,3 +957,176 @@ def mapping(base_url: str, json_url: str):
         stats = pstats.Stats(profiler).sort_stats('cumtime')
         stats.dump_stats('profile_results.prof')
         logging.info("Profiling results saved to profile_results.prof")
+
+
+def test_multiprocessing_extraction(base_url: str, json_url: str):
+    """
+    멀티프로세싱 요소 추출 테스트 전용 함수
+    """
+    logging.info("🧪 Starting multiprocessing extraction test...")
+    return mapping(base_url, json_url, test_performance=True)
+
+
+def quick_mp_vs_threading_comparison(base_url: str, json_url: str):
+    """
+    빠른 멀티프로세싱 vs 스레딩 비교
+    """
+    logging.info("⚡ Quick multiprocessing vs threading comparison...")
+    
+    # 멀티프로세싱 처리
+    logging.info("Testing multiprocessing extraction...")
+    start_time = time.time()
+    mapping(base_url, json_url, test_performance=False)
+    mp_time = time.time() - start_time
+    
+    logging.info(f"🏁 Multiprocessing completed in: {mp_time:.2f}s")
+    
+    return {
+        'multiprocessing': mp_time,
+        'status': 'completed'
+    }
+
+def quick_overhead_analysis(base_url: str, json_url: str):
+    """
+    빠른 오버헤드 분석 실행
+    """
+    logging.info("🔍 Starting quick overhead analysis...")
+    
+    # 기본 설정
+    target_height = 720
+    web_navigator = WebNavigator(headless=True, base_url=base_url)
+    matcher = ElementExtractor(resize_size=(1024, 1024))
+    
+    try:
+        # 이미지 준비
+        figma_raw, figma_interactions = load_figma_data(json_url)
+        root_image = get_img_by_id(figma_raw[0]['data']['id'], figma_raw)
+        web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
+        
+        # 오버헤드 분석 실행
+        overhead_results = test_overhead_optimization(root_image, web_img, matcher)
+        
+        return overhead_results
+        
+    finally:
+        if web_navigator.driver is not None:
+            web_navigator.quit()
+
+
+# 기존 mapping 함수에 오버헤드 분석 옵션 추가
+
+def extract_elements_multiprocessing_safe(figma_image: Image.Image, web_image: Image.Image, target_height: int = 720) -> Tuple[List[ExtractedElement], List[ExtractedElement]]:
+    """
+    멀티프로세싱을 사용한 요소 추출 (GPU 락 경합 해결된 안전 버전)
+    """
+    logging.info("🚀 Starting SAFE multiprocessing elements extraction (CPU mode)...")
+    
+    # 이미지를 bytes로 변환 (프로세스 간 전달용)
+    import io
+    
+    # Figma 이미지를 bytes로 변환
+    figma_buffer = io.BytesIO()
+    figma_image.save(figma_buffer, format='PNG')
+    figma_data = figma_buffer.getvalue()
+    
+    # Web 이미지를 bytes로 변환
+    web_buffer = io.BytesIO()
+    web_image.save(web_buffer, format='PNG')
+    web_data = web_buffer.getvalue()
+    
+    # 멀티프로세싱으로 요소 추출 (CPU 모드)
+    start_time = time.time()
+    
+    # multiprocessing start method를 'spawn'으로 설정 (더 안전)
+    ctx = multiprocessing.get_context('spawn')
+    
+    with ProcessPoolExecutor(max_workers=2, initializer=init_extraction_worker, mp_context=ctx) as executor:
+        # Figma와 Web 요소 추출을 동시에
+        figma_future = executor.submit(extract_elements_mp_worker, (figma_data, target_height, "Figma"))
+        web_future = executor.submit(extract_elements_mp_worker, (web_data, target_height, "Web"))
+        
+        # 결과 수집
+        figma_extracted = figma_future.result()
+        web_extracted = web_future.result()
+    
+    end_time = time.time()
+    logging.info(f"🎯 SAFE Multiprocessing elements extraction completed: {end_time - start_time:.2f} seconds")
+    
+    return figma_extracted, web_extracted
+
+
+def test_gpu_lock_fix(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor) -> Dict[str, float]:
+    """
+    GPU 락 수정 전후 성능 비교 테스트
+    """
+    results = {}
+    target_height = 720
+    
+    # 1. 기존 멀티프로세싱 (GPU 락 발생 가능)
+    logging.info("🔬 Testing old multiprocessing (may have GPU lock)...")
+    start_time = time.time()
+    try:
+        figma_old, web_old = extract_elements_multiprocessing(figma_image, web_image, target_height)
+        old_mp_time = time.time() - start_time
+        results['old_multiprocessing'] = old_mp_time
+        logging.info(f"  Old multiprocessing: {old_mp_time:.2f}s")
+    except Exception as e:
+        old_mp_time = float('inf')
+        results['old_multiprocessing'] = old_mp_time
+        logging.warning(f"  Old multiprocessing failed: {e}")
+    
+    # 2. 새로운 안전한 멀티프로세싱 (CPU 모드)
+    logging.info("🔬 Testing new SAFE multiprocessing (CPU mode)...")
+    start_time = time.time()
+    figma_safe, web_safe = extract_elements_multiprocessing_safe(figma_image, web_image, target_height)
+    safe_mp_time = time.time() - start_time
+    results['safe_multiprocessing'] = safe_mp_time
+    logging.info(f"  Safe multiprocessing: {safe_mp_time:.2f}s")
+    
+    # 3. 순차 처리 비교
+    logging.info("🔬 Testing sequential processing...")
+    start_time = time.time()
+    figma_seq = extract_elements(figma_image, 0, target_height, matcher)
+    web_seq = extract_elements(web_image, 0, target_height, matcher)
+    sequential_time = time.time() - start_time
+    results['sequential'] = sequential_time
+    logging.info(f"  Sequential: {sequential_time:.2f}s")
+    
+    # 결과 분석
+    if results['old_multiprocessing'] != float('inf'):
+        improvement = results['old_multiprocessing'] / safe_mp_time
+        logging.info(f"📊 GPU Lock Fix Results:")
+        logging.info(f"  Old MP (with lock): {results['old_multiprocessing']:.2f}s")
+        logging.info(f"  Safe MP (CPU):      {safe_mp_time:.2f}s")
+        logging.info(f"  Improvement:        {improvement:.2f}x faster")
+    
+    safe_vs_sequential = sequential_time / safe_mp_time
+    logging.info(f"  Safe MP vs Sequential: {safe_vs_sequential:.2f}x speedup")
+    
+    return results
+
+def test_gpu_lock_fix_quick(base_url: str, json_url: str):
+    """
+    빠른 GPU 락 수정 테스트 실행
+    """
+    logging.info("🔍 Starting GPU lock fix test...")
+    
+    # 기본 설정
+    target_height = 720
+    web_navigator = WebNavigator(headless=True, base_url=base_url)
+    matcher = ElementExtractor(resize_size=(1024, 1024))
+    
+    try:
+        # 이미지 준비
+        figma_raw, figma_interactions = load_figma_data(json_url)
+        root_image = get_img_by_id(figma_raw[0]['data']['id'], figma_raw)
+        web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
+        
+        # GPU 락 수정 테스트 실행
+        lock_fix_results = test_gpu_lock_fix(root_image, web_img, matcher)
+        
+        return lock_fix_results
+        
+    finally:
+        if web_navigator.driver is not None:
+            web_navigator.quit()
