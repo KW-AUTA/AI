@@ -11,7 +11,7 @@ import time
 import random
 import torch
 import requests
-from routes.dto.response import MappingInfo, InterActionInfo
+from routes.dto.response import RoutingMappingInfo, InteractionMappingInfo, GeneralMappingInfo, BaseMappingInfo
 from typing import List, Dict, Tuple, Optional, Set
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import multiprocessing
@@ -22,7 +22,7 @@ import cProfile
 import pstats
 from .element_matcher import ElementExtractor
 import matplotlib.pyplot as plt
-
+from PIL import ImageChops
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -75,11 +75,11 @@ def catergorize_match(match: MatchResult) -> List[str]:
     logging.debug(f"Categorized match for : {category}")
     return category
 
-def get_mapping_info(matches: List[MatchResult]) -> List[MappingInfo]:
+def get_mapping_info(matches: List[MatchResult]) -> List[BaseMappingInfo]:
     """매칭 결과를 매핑 정보로 변환"""
     mapping_infos = []
     for match in matches:
-        mapping_info = MappingInfo(
+        mapping_info = BaseMappingInfo(
             componentName=match.figma.name,
             destinationFigmaPage=match.figma.dest if match.figma.dest else "",
             destinationUrl=match.web.dest if match.web.dest else "",
@@ -193,7 +193,7 @@ def get_interaction_by_id(id: str, interactions: List[Dict]) -> Dict:
 
 
 
-def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[MappingInfo]:
+def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, web_img: Image.Image, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
     return_matches = []
     for match in matches:
         interaction = get_interaction_by_id(match.figma.id, interactions)
@@ -204,24 +204,25 @@ def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web
             element, xpath = web_navigator.get_element_at_coordinate_and_xpath(center_x, center_y)
             if element is not None and xpath is not None:
                 urls = web_navigator.get_url_in_new_tab(xpath)
-                return_matches.append(MappingInfo(
+                return_matches.append(RoutingMappingInfo(
+                    type="ROUTING",
                     componentName=match.figma.name,
                     destinationFigmaPage=interaction['interactionType']['destinationId'],
                     destinationUrl=urls,
                     actualUrl=urls,
                     failReason=", ".join(match.errorCategories) if match.errorCategories != ['same'] else "",
                     isSuccess=True,
-                    isRouting=True
                 ))
                 logging.debug(f"Found URL for {match.figma.name}: {urls}")
             else:
-                return_matches.append(InterActionInfo(
+                return_matches.append(RoutingMappingInfo(
+                    type="ROUTING",
                     componentName=match.figma.name,
-                    expectedAction=interaction['interactionType']['navigation'],
-                    actualAction=interaction['interactionType']['navigation'],
-                    failReason=match.errorCategories,
-                    isSuccess=False,
-                    isRouting=False
+                    destinationFigmaPage=interaction['interactionType']['destinationId'],
+                    destinationUrl=urls,
+                    actualUrl=urls,
+                    failReason=", ".join(match.errorCategories) if match.errorCategories != ['same'] else "",
+                    isSuccess=True,
                 ))
         elif interaction['interactionType']['navigation'] == 'OVERLAY':
             center_x = float(match.figma.extracted.box[0] + match.figma.extracted.box[2]) / 2
@@ -231,46 +232,52 @@ def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web
                 element.click()
                 overlay_web_img = web_navigator.capture_full_page()
                 overlay_figma_img = get_img_by_id(interaction['interactionType']['destinationId'], figma_raw)
-                overlay_figma_extracted = extract_elements(overlay_figma_img, 0, overlay_figma_img.height, matcher)
-                overlay_figma_fare = fare_figma_extracted(figma_tree, overlay_figma_extracted, [])
-                overlay_web_extracted = extract_elements(overlay_web_img, 0, overlay_web_img.height, matcher)
-                sim_dict_overlay = matcher.calculate_similarity(overlay_figma_img, overlay_web_img, overlay_figma_fare, overlay_web_extracted)
-                matches_overlay, _ = matcher.get_matches(sim_dict_overlay, overlay_figma_fare, overlay_web_extracted, 0.8)
-                if len(matches_overlay) > 0:
-                    return_matches.append(MappingInfo(
-                        componentName=match.figma.name,
-                        destinationFigmaPage=interaction['interactionType']['destinationId'],
-                        destinationUrl=urls,
-                        actualUrl=urls,
-                        failReason=", ".join(match.errorCategories) if match.errorCategories != ['same'] else "",
-                        isSuccess=True,
-                        isRouting=True
-                    ))
-                else:
-                    return_matches.append(InterActionInfo(
-                        componentName=match.figma.name,
-                        expectedAction=interaction['interactionType']['navigation'],
-                        actualAction=interaction['interactionType']['navigation'],
-                        failReason=match.errorCategories,
-                        isSuccess=False,
-                        isRouting=False
-                    ))
+                if overlay_figma_img is not None:
+                    diff_img = ImageChops.difference(web_img, overlay_web_img)
+                    if diff_img.getbbox() is None:
+                        return_matches.append(InteractionMappingInfo(
+                            type="INTERACTION",
+                            componentName=match.figma.name,
+                            expectedAction="OVERLAY",
+                            actualAction="None",
+                            failReason="Overlay is not found",
+                            isSuccess=False,
+                        ))
+                    elif diff_img.getbbox() is not None:
+                        # compare diff_img and overlay_figma_img
+                        diff_img_array = np.array(diff_img)
+                        overlay_figma_img_array = np.array(overlay_figma_img)
+                        if np.array_equal(diff_img_array, overlay_figma_img_array):
+                            return_matches.append(InteractionMappingInfo(
+                                type="INTERACTION",
+                                componentName=match.figma.name,
+                                expectedAction="OVERLAY",
+                                actualAction="OVERLAY",
+                                failReason="Different overlay",
+                                isSuccess=False,
+                            ))
+                        else:
+                            return_matches.append(InteractionMappingInfo(
+                                type="INTERACTION",
+                                componentName=match.figma.name,
+                                expectedAction="OVERLAY",
+                                actualAction="OVERLAY",
+                                failReason="same",
+                                isSuccess=True,
+                            ))
 
     return return_matches
-def process_matches(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[MappingInfo]:
+def process_matches(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
     """매칭 결과 처리"""
     logging.info("Processing matches...")
     return_matches = []
 
     for match in matches:
-        return_matches.append(MappingInfo(
+        return_matches.append(GeneralMappingInfo(
+            type="GENERAL",
             componentName=match.figma.name,
-            destinationFigmaPage="",
-            destinationUrl="",
-            actualUrl="",
             failReason=", ".join(match.errorCategories) if match.errorCategories != ['same'] else "",
             isSuccess=match.errorCategories == ['same'],
-            isRouting=False
         ))        
     return return_matches
 
@@ -297,6 +304,15 @@ def convert_raw_to_tree(figma_tree: Dict, root_image: Image.Image, matcher: Elem
 
     return converted_tree
     
+def get_frame_by_name(figma_tree: Dict, name: str) -> Optional[TreeNode]:
+    if figma_tree['data']['name'] == name:
+        return figma_tree
+    for child in figma_tree['children']:
+        result = get_frame_by_name(child, name)
+        if result is not None:
+            return result
+    return None
+
 def find_best_iou_node(
     root: TreeNode,
     target_rect: Tuple[float, float, float, float]
@@ -587,6 +603,10 @@ def extract_elements_worker(args):
 # 🔧 멀티프로세싱용 전역 변수
 _global_matcher = None
 
+def dummy_worker(x):
+    """오버헤드 측정용 더미 워커 함수"""
+    return x * 2
+
 def init_extraction_worker():
     """멀티프로세싱 워커 초기화 - 각 프로세스마다 YOLO 모델 로드 (CPU 모드)"""
     global _global_matcher
@@ -787,9 +807,6 @@ def analyze_multiprocessing_overhead(figma_image: Image.Image, web_image: Image.
     logging.info("⚡ Measuring process creation overhead...")
     start_time = time.time()
     
-    def dummy_worker(x):
-        return x * 2
-    
     with ProcessPoolExecutor(max_workers=2) as executor:
         future1 = executor.submit(dummy_worker, 1)
         future2 = executor.submit(dummy_worker, 2)
@@ -845,8 +862,14 @@ def test_overhead_optimization(figma_image: Image.Image, web_image: Image.Image,
     
     return results
 
+def get_frame_by_name_from_raw(figma_raw: List[Dict], name: str) -> Optional[Dict]:
+    for data in figma_raw:
+        if data['data']['name'] == name:
+            return data
+    return None
 
-def mapping(base_url: str, json_url: str, test_performance: bool = False):
+# overlay 비교: 성공, 실패(뜸? 같음?)
+def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False):
     """메인 실행 함수"""
     logging.info(f"Starting mapping process for base_url: {base_url} and json_url: {json_url}")
     target_height = 720
@@ -863,8 +886,9 @@ def mapping(base_url: str, json_url: str, test_performance: bool = False):
         matcher = ElementExtractor(resize_size=(1024, 1024))
         figma_raw, figma_interactions = load_figma_data(json_url)
 
-        root_image = get_img_by_id(figma_raw[0]['data']['id'], figma_raw)
-        figma_tree = convert_raw_to_tree(figma_raw[0], root_image, matcher)
+        root_frame = get_frame_by_name_from_raw(figma_raw, current_page)
+        root_image = get_img_by_id(root_frame['data']['id'], figma_raw)
+        figma_tree = convert_raw_to_tree(root_frame, root_image, matcher)
 
 
         logging.info("Start Web page capturing...")
@@ -873,12 +897,6 @@ def mapping(base_url: str, json_url: str, test_performance: bool = False):
 
         logging.info("Start Figma elements extracting...")
         start_time = time.time()
-        # 성능 테스트 실행 (옵션)
-        if test_performance:
-            logging.info("🔬 Running extraction methods performance comparison...")
-            performance_results = test_extraction_methods_performance(root_image, web_img, matcher)
-            logging.info(f"Performance test completed. Results: {performance_results}")
-        
         # 🚀 안전한 멀티프로세싱을 사용한 병렬 요소 추출 (GPU 락 방지)
         logging.info("🔥 Using SAFE multiprocessing for parallel extraction (CPU mode)...")
         figma_extracted, web_extracted = extract_elements_multiprocessing_safe(root_image, web_img, target_height)
@@ -917,10 +935,17 @@ def mapping(base_url: str, json_url: str, test_performance: bool = False):
 
         logging.info("Step 4a: Matching elements WITH interactions")
         sim_dict_interaction = matcher.calculate_similarity(root_image, web_img, fare_figma_interaction, web_extracted)
-        matches_interaction, _ = matcher.get_matches(sim_dict_interaction, fare_figma_interaction, web_extracted, 0.8)
-        
+        matches_interaction, unmatched_figma_interaction, unmatched_web_interaction = \
+            matcher.get_matches(sim_dict_interaction, fare_figma_interaction, web_extracted, 0.8)
         logging.info(f"Found {len(matches_interaction)} matches for interaction elements.")
 
+        # TODO
+        # 매칭된 요소들과 IOU가 큰 요소가 큰 값 제거 (NMS)
+        # 그래도 매칭이 안되는 요소들을 unmatched로 설정
+
+        
+
+        # visualizer.visualize_boxes(root_image, [m.figma.extracted.box for m in low_confidence_interaction], "Low confidence matches")
         # Get the web elements that have been matched
         matched_web_elements_ids = {id(match.web) for match in matches_interaction}
         web_extracted_remaining = [web_el for web_el in web_extracted if id(web_el) not in matched_web_elements_ids]
@@ -929,22 +954,43 @@ def mapping(base_url: str, json_url: str, test_performance: bool = False):
         logging.info("Step 4b: Matching elements WITHOUT interactions")
         if fare_figma_no_interaction and web_extracted_remaining:
             sim_dict_no_interaction = matcher.calculate_similarity(root_image, web_img, fare_figma_no_interaction, web_extracted_remaining)
-            matches_no_interaction, _ = matcher.get_matches(sim_dict_no_interaction, fare_figma_no_interaction, web_extracted_remaining, 0.8)
+            matches_no_interaction, unmatched_figma_no_interaction, unmatched_web_no_interaction = \
+                matcher.get_matches(sim_dict_no_interaction, fare_figma_no_interaction, web_extracted_remaining, 0.8)
             logging.info(f"Found {len(matches_no_interaction)} matches for non-interaction elements.")
         else:
             matches_no_interaction = []
             logging.info("No non-interaction elements or remaining web elements to match.")
 
+        # 교집합 남기도록 필터링
+        unmatched_figma = []    
+        for figma_el in unmatched_figma_interaction:
+            if figma_el in unmatched_figma_no_interaction:
+                unmatched_figma.append(figma_el)
+        for figma_el in unmatched_figma_no_interaction:
+            if figma_el not in unmatched_figma_interaction:
+                unmatched_figma.append(figma_el)
+        unmatched_web = []
+        for web_el in unmatched_web_interaction:
+            if web_el in unmatched_web_no_interaction:
+                unmatched_web.append(web_el)
+        for web_el in unmatched_web_no_interaction:
+            if web_el not in unmatched_web_interaction:
+                unmatched_web.append(web_el)
+
+
         # Combine matches
         matches = matches_interaction + matches_no_interaction
-        
         visualizer.visualize_matches(root_image, web_img, matches, "Matching Visualization")
+        # visualizer.visualize_boxes(root_image, [m.figma.extracted.box for m in unmatched_figma], "Unmatched Figma elements")
+        # visualizer.visualize_boxes(web_img, [m.web.box for m in unmatched_web], "Unmatched Web elements")
+        # return []
         logging.info(f"Found {len(matches)} total matches.")
     
         logging.info("Step 5: Processing Matches")
         return_matches = []
-        return_matches.append(match_interaction(matcher, matches_interaction, web_navigator, figma_interactions, figma_tree, figma_raw))
-        return_matches.append(process_matches(matcher, matches_no_interaction, web_navigator, figma_interactions, figma_tree, figma_raw))
+        # 리스트를 extend로 합쳐서 중첩된 리스트 구조를 평평하게 만듦
+        return_matches.extend(match_interaction(matcher, matches_interaction, web_navigator, web_img, figma_interactions, figma_tree, figma_raw))
+        return_matches.extend(process_matches(matcher, matches_no_interaction, web_navigator, figma_interactions, figma_tree, figma_raw))
 
         return return_matches
 

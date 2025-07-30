@@ -13,7 +13,7 @@ from typing import List, Tuple, Optional, Any, Dict
 import cv2
 import os
 from scipy.optimize import linear_sum_assignment
-from .models import FigmaFare, ExtractedElement
+from .models import FigmaFare, ExtractedElement, MatchResult
 from .errorChecker import ErrorChecker
 # Letterbox function: resize and pad image to meet new_shape, maintaining aspect ratio.
 def letterbox(im, new_shape=(640, 640), color=(114, 114, 114)):
@@ -97,10 +97,7 @@ class ElementExtractor:
         self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
         self.api.SetPageSegMode(tesserocr.PSM.SINGLE_BLOCK)
         self.api.SetVariable("tessedit_char_whitelist", "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz가-힣 ")
-        self.api.SetVariable("user_defined_dpi", "300")
-            
-        self.feature_extractor = self.yolo.model.model[:11]
-        self.feature_extractor.eval()
+        # self.api.SetVariable("user_defined_dpi", "300")
         
         self.transform = T.Compose([
             T.Resize(resize_size),
@@ -322,6 +319,7 @@ class ElementExtractor:
         for i in range(len(textsA)):
             for j in range(len(textsB)):
                 text_sim[i, j] = self.text_similarity(textsA[i], textsB[j])
+        text_sim = np.where(text_sim > 0.7, text_sim, -1)
         return text_sim
 
     def calculate_feature_similarity_matrix(
@@ -344,9 +342,10 @@ class ElementExtractor:
         featuresB = torch.stack(tensor_list_B, dim=0)  # (M, D)
 
         sim_matrix = featuresA @ featuresB.T          # (N, M) 유사도 행렬
-
-        # 3) 최종적으로 numpy array로 리턴
-        return sim_matrix.cpu().numpy()
+        # 3) 먼저 numpy array로 변환한 후 필터링
+        sim_matrix = sim_matrix.cpu().numpy()
+        sim_matrix = np.where(sim_matrix > 0.7, sim_matrix, -1)
+        return sim_matrix
 
     def calculate_size_similarity_matrix(self, figma_fare: List[FigmaFare], web_extracted: List[ExtractedElement]) -> np.ndarray:
         boxes1 = np.array([FigmaFare.extracted.box for FigmaFare in figma_fare])
@@ -425,39 +424,115 @@ class ElementExtractor:
             
         return result
 
-    def get_matches(self, sim_dict, figma_elements_data, web_elements_data, min_similarity: float = 0.8):
+    def get_matches(
+        self,
+        sim_dict: Dict[str, np.ndarray],
+        figma_elements_data: List[FigmaFare],
+        web_elements_data: List[ExtractedElement],
+        min_similarity: float = 0.8
+    ) -> Tuple[List[MatchResult], List[MatchResult], List[MatchResult]]:
+        # 1. Weighted similarity calculation
+        sim_matrix = (
+            sim_dict['text'] * 0.35 +
+            sim_dict['feature'] * 0.35 +
+            sim_dict['size'] * 0.15 +
+            sim_dict['coordinate'] * 0.15
+        )
 
-        matrix = (sim_dict['text'] * 0.35 + sim_dict['feature'] * 0.35 + sim_dict['size'] * 0.2 + sim_dict['coordinate'] * 0.1)
-        matrix = (matrix - np.min(matrix)) / (np.max(matrix) - np.min(matrix) + 1e-8)
-        if matrix.size == 0 or np.max(matrix) < min_similarity:
-            return [], np.array([])
+        # # 2. Normalize to [0,1]
+        # min_val, max_val = sim_matrix.min(), sim_matrix.max()
+        # sim_matrix = (sim_matrix - min_val) / (max_val - min_val + 1e-8)
 
-        box_fair = []
-        sim_matrix = matrix.copy()
-        max_sim = np.max(sim_matrix)
-
-        while max_sim > min_similarity:
-            max_idx = np.unravel_index(np.argmax(sim_matrix), sim_matrix.shape)
-            i, j = max_idx
-            box_fair.append((i, j))
-            sim_matrix[i, :] = 0
-            sim_matrix[:, j] = 0
-            max_sim = np.max(sim_matrix)
-
-        matches = []
-        for i, j in box_fair:
-
-            figma_element = figma_elements_data[i]
-            web_element = web_elements_data[j]
-            match_result = MatchResult(
-                figma=figma_element,
-                web=web_element,
-                feature_similarity=sim_dict['feature'][i, j],
-                text_similarity=sim_dict['text'][i, j],
-                size_similarity=sim_dict['size'][i, j],
-                coordinate_similarity=sim_dict['coordinate'][i, j],
-                score=float(matrix[i, j]),
-                errorCategories=ErrorChecker().check_error(figma_element.extracted.box, web_element.box, figma_element.extracted.text, web_element.text)
+        # 3. Greedy matching for high-confidence
+        matches: List[MatchResult] = []
+        unmatched_figma = set(range(sim_matrix.shape[0]))
+        unmatched_web   = set(range(sim_matrix.shape[1]))
+        temp_matrix = sim_matrix.copy()
+        while True:
+            i, j = np.unravel_index(np.argmax(temp_matrix), temp_matrix.shape)
+            score = temp_matrix[i, j]
+            if score < min_similarity:
+                break
+            print(f"figma text: {figma_elements_data[i].extracted.text}")
+            print(f"web text: {web_elements_data[j].text}")
+            mr = MatchResult(
+                figma=figma_elements_data[i],
+                web=web_elements_data[j],
+                feature_similarity=float(sim_dict['feature'][i, j]),
+                text_similarity=float(sim_dict['text'][i, j]),
+                size_similarity=float(sim_dict['size'][i, j]),
+                coordinate_similarity=float(sim_dict['coordinate'][i, j]),
+                score=float(score),
+                errorCategories=ErrorChecker().check_error(
+                    figma_elements_data[i].extracted.box,
+                    web_elements_data[j].box,
+                    figma_elements_data[i].extracted.text,
+                    web_elements_data[j].text
+                )
             )
-            matches.append(match_result)
-        return matches, matrix
+            matches.append(mr)
+            unmatched_figma.discard(i)
+            unmatched_web.discard(j)
+            temp_matrix[i, :] = -np.inf
+            temp_matrix[:, j] = -np.inf
+
+        # TODO
+        # 매칭된 요소들과 IOU가 큰 요소가 큰 값 제거 (NMS)
+        # 그래도 매칭이 안되는 요소들을 unmatched로 설정
+
+        print(f"unmatched_figma: {unmatched_figma}")
+        print(f"unmatched_web: {unmatched_web}")
+        unmatched_figma_idxs = unmatched_figma
+        unmatched_web_idxs = unmatched_web
+
+        # 4. (선택) IOU 기반 제외 처리 — 필요 없으면 건너뛰셔도 됩니다.
+        for mr in matches:
+            # figma 중 IOU 높으면 제거
+            to_remove = {
+                i for i in unmatched_figma_idxs
+                if ElementExtractor.calculate_iou(
+                    mr.figma.extracted.box,
+                    figma_elements_data[i].extracted.box
+                ) > 0.5
+            }
+            unmatched_figma_idxs -= to_remove
+
+            # web 중 IOU 높으면 제거
+            to_remove = {
+                j for j in unmatched_web_idxs
+                if ElementExtractor.calculate_iou(
+                    mr.web.box,
+                    web_elements_data[j].box
+                ) > 0.5
+            }
+            unmatched_web_idxs -= to_remove
+
+        # 5. unmatched MatchResult 생성
+        unmatched_figma = [
+            MatchResult(
+                figma=figma_elements_data[i],
+                web=None,
+                feature_similarity=0.0,
+                text_similarity=0.0,
+                size_similarity=0.0,
+                coordinate_similarity=0.0,
+                score=0.0,
+                errorCategories="Not Matched"
+            )
+            for i in sorted(unmatched_figma_idxs)
+        ]
+        unmatched_web = [
+            MatchResult(
+                figma=None,
+                web=web_elements_data[j],
+                feature_similarity=0.0,
+                text_similarity=0.0,
+                size_similarity=0.0,
+                coordinate_similarity=0.0,
+                score=0.0,
+                errorCategories="Not Matched"
+            )
+            for j in sorted(unmatched_web_idxs)
+        ]
+
+        return matches, unmatched_figma, unmatched_web

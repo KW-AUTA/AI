@@ -1,9 +1,8 @@
 from fastapi import APIRouter
-from routes.dto.request import MappingRequest, InteractionRequest
-from routes.dto.response import MappingResponse, MappingInfo, InterActionResponse, InterActionInfo
+from routes.dto.request import MappingRequest
+from routes.dto.response import MappingResponse, MappingInfo
 from typing import List
 from service.component_test import execute_component_mapping_test
-from service.interaction_test import execute_interaction_test
 
 router = APIRouter()
 figma_cache = {}
