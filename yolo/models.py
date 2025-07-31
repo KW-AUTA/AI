@@ -82,12 +82,48 @@ class FigmaElement:
 class WebElement:
     xpath: str
 
-@dataclass(kw_only=True, frozen=True, slots=True)
+@dataclass(kw_only=True, frozen=False, slots=True)
 class ExtractedElement:
     box:        np.ndarray
     feature:    torch.Tensor
     text:       str
     cls:        int
+    
+    def __eq__(self, other):
+        """커스텀 비교 메서드: numpy 배열과 torch 텐서를 안전하게 비교"""
+        if not isinstance(other, ExtractedElement):
+            return False
+        
+        # feature 비교: 타입이 다를 수 있으므로 안전하게 처리
+        feature_equal = False
+        try:
+            if isinstance(self.feature, torch.Tensor) and isinstance(other.feature, torch.Tensor):
+                feature_equal = torch.equal(self.feature, other.feature)
+            elif isinstance(self.feature, np.ndarray) and isinstance(other.feature, np.ndarray):
+                feature_equal = np.array_equal(self.feature, other.feature)
+            elif isinstance(self.feature, torch.Tensor) and isinstance(other.feature, np.ndarray):
+                feature_equal = torch.equal(self.feature, torch.from_numpy(other.feature))
+            elif isinstance(self.feature, np.ndarray) and isinstance(other.feature, torch.Tensor):
+                feature_equal = torch.equal(torch.from_numpy(self.feature), other.feature)
+            else:
+                feature_equal = False
+        except:
+            feature_equal = False
+        
+        return (
+            np.array_equal(self.box, other.box) and
+            feature_equal and
+            self.text == other.text and
+            self.cls == other.cls
+        )
+    
+    def __hash__(self):
+        """해시 메서드 구현"""
+        return hash((
+            tuple(self.box.flatten()),
+            self.text,
+            self.cls
+        ))
 
 @dataclass(kw_only=True, frozen=True, slots=True)
 class ReturnMatch:
@@ -98,12 +134,17 @@ class ReturnMatch:
     failReason: str
     isSuccess: bool
     isRouting: bool
+
 @dataclass(kw_only=True, frozen=True, slots=True)
 class FigmaFare:
     id: str
     name: str
     box: Tuple[float, float, float, float]
     extracted: ExtractedElement
+    
+    def __hash__(self):
+        """해시 메서드 구현"""
+        return hash((self.id, self.name, self.box))
 
 
 @dataclass(kw_only=True, frozen=True, slots=True)
@@ -115,8 +156,8 @@ class WebFare:
 
 @dataclass(kw_only=True, frozen=True, slots=True)
 class MatchResult:
-    figma: FigmaFare
-    web:   ExtractedElement
+    figma: FigmaFare | None 
+    web:   ExtractedElement | None
     feature_similarity:    float
     text_similarity:       float
     size_similarity:       float

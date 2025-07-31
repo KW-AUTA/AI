@@ -11,9 +11,10 @@ import time
 import random
 import torch
 import requests
-from routes.dto.response import MappingInfo, InterActionInfo
+from routes.dto.response import RoutingMappingInfo, InteractionMappingInfo, GeneralMappingInfo, BaseMappingInfo
 from typing import List, Dict, Tuple, Optional, Set
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import multiprocessing
 from .tree_loader import TreeNode
 from contextlib import contextmanager
 import concurrent.futures
@@ -21,7 +22,7 @@ import cProfile
 import pstats
 from .element_matcher import ElementExtractor
 import matplotlib.pyplot as plt
-
+from PIL import ImageChops
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -74,11 +75,11 @@ def catergorize_match(match: MatchResult) -> List[str]:
     logging.debug(f"Categorized match for : {category}")
     return category
 
-def get_mapping_info(matches: List[MatchResult]) -> List[MappingInfo]:
+def get_mapping_info(matches: List[MatchResult]) -> List[BaseMappingInfo]:
     """매칭 결과를 매핑 정보로 변환"""
     mapping_infos = []
     for match in matches:
-        mapping_info = MappingInfo(
+        mapping_info = BaseMappingInfo(
             componentName=match.figma.name,
             destinationFigmaPage=match.figma.dest if match.figma.dest else "",
             destinationUrl=match.web.dest if match.web.dest else "",
@@ -107,16 +108,26 @@ def process_images(figma_url: str, web_navigator: WebNavigator, target_height: i
     logging.info("Finished processing images.")
     return frame_img, web_img, frames
 
+def extract_texts(img: Image.Image, matcher: ElementExtractor, boxes: List[Tuple[int, int, int, int]]) -> List[str]:
+    """기존 순차 처리 방식으로 텍스트 추출"""
+    texts = []
+    for box in boxes:
+        text_margin = 10
+        margin_box = (box[0] - text_margin, box[1] - text_margin, box[2] + text_margin, box[3] + text_margin)
+        text = matcher.extract_text(img, margin_box)
+        texts.append(text)
+    return texts
+
 def extract_elements(img: Image.Image, start_height: int, windowing_height: int, matcher: ElementExtractor, iou_threshold: float = 0.5) -> List[ExtractedElement]:
     """이미지에서 요소 추출 (순차 처리 버전)"""
     logging.info(f"Extracting elements from image with height {img.height} using sequential windowing...")
-
+    
     windows_to_process = []
     current_height = 0
     while current_height < img.height:
         crop_img = img.crop((0, current_height, img.width, min(current_height + windowing_height, img.height)))
         windows_to_process.append((crop_img, current_height))
-        current_height += windowing_height // 2
+        current_height += windowing_height * 0.75
 
     all_boxes = []
     all_scores = []
@@ -137,6 +148,8 @@ def extract_elements(img: Image.Image, start_height: int, windowing_height: int,
         boxes[:, 3] += original_height
         
         return boxes, scores, cls, features
+    logging.info(f"Processing {len(windows_to_process)} windows...")
+    start_time = time.time()
     for crop_img, h in windows_to_process:
         boxes, scores, cls, features = process_window(crop_img, h)
         if boxes is not None:
@@ -144,7 +157,8 @@ def extract_elements(img: Image.Image, start_height: int, windowing_height: int,
             all_scores.append(scores)
             all_cls.append(cls)
             all_features.append(features)
-
+    end_time = time.time()
+    logging.info(f"Time taken: {end_time - start_time} seconds for figma extraction")
 
     if not all_boxes:
         logging.info("No elements were extracted.")
@@ -156,26 +170,16 @@ def extract_elements(img: Image.Image, start_height: int, windowing_height: int,
     final_cls = np.concatenate(all_cls)
     final_features = np.vstack(all_features)
 
-
-
     nms_boxes = final_boxes
     nms_cls = final_cls
     nms_features = final_features
-    logging.info(f"Kept {len(nms_boxes)} boxes after NMS.")
-
-    # OCR 순차 처리
+    
     extracted_elements = []
     if nms_boxes.size > 0:
         for i, box in enumerate(nms_boxes):
-            try:
-                text_margin = 10
-                margin_box = (box[0] - text_margin, box[1] - text_margin, box[2] + text_margin, box[3] + text_margin)
-                text = matcher.extract_text(img, margin_box)
-                feature = nms_features[i]
-                cls = nms_cls[i]
-                extracted_elements.append(ExtractedElement(box=box, feature=feature, text=text, cls=cls))
-            except Exception as exc:
-                logging.error(f'OCR for box {box} generated an exception: {exc}')
+            feature = nms_features[i]
+            cls = nms_cls[i]
+            extracted_elements.append(ExtractedElement(box=box, feature=feature, text=None, cls=cls))
 
     logging.info(f"Extracted and filtered {len(extracted_elements)} elements.")
     return extracted_elements
@@ -189,7 +193,7 @@ def get_interaction_by_id(id: str, interactions: List[Dict]) -> Dict:
 
 
 
-def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[MappingInfo]:
+def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, web_img: Image.Image, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
     return_matches = []
     for match in matches:
         interaction = get_interaction_by_id(match.figma.id, interactions)
@@ -200,24 +204,25 @@ def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web
             element, xpath = web_navigator.get_element_at_coordinate_and_xpath(center_x, center_y)
             if element is not None and xpath is not None:
                 urls = web_navigator.get_url_in_new_tab(xpath)
-                return_matches.append(MappingInfo(
+                return_matches.append(RoutingMappingInfo(
+                    type="ROUTING",
                     componentName=match.figma.name,
                     destinationFigmaPage=interaction['interactionType']['destinationId'],
                     destinationUrl=urls,
                     actualUrl=urls,
                     failReason=", ".join(match.errorCategories) if match.errorCategories != ['same'] else "",
                     isSuccess=True,
-                    isRouting=True
                 ))
                 logging.debug(f"Found URL for {match.figma.name}: {urls}")
             else:
-                return_matches.append(InterActionInfo(
+                return_matches.append(RoutingMappingInfo(
+                    type="ROUTING",
                     componentName=match.figma.name,
-                    expectedAction=interaction['interactionType']['navigation'],
-                    actualAction=interaction['interactionType']['navigation'],
-                    failReason=match.errorCategories,
-                    isSuccess=False,
-                    isRouting=False
+                    destinationFigmaPage=interaction['interactionType']['destinationId'],
+                    destinationUrl=urls,
+                    actualUrl=urls,
+                    failReason=", ".join(match.errorCategories) if match.errorCategories != ['same'] else "",
+                    isSuccess=True,
                 ))
         elif interaction['interactionType']['navigation'] == 'OVERLAY':
             center_x = float(match.figma.extracted.box[0] + match.figma.extracted.box[2]) / 2
@@ -227,46 +232,52 @@ def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web
                 element.click()
                 overlay_web_img = web_navigator.capture_full_page()
                 overlay_figma_img = get_img_by_id(interaction['interactionType']['destinationId'], figma_raw)
-                overlay_figma_extracted = extract_elements(overlay_figma_img, 0, overlay_figma_img.height, matcher)
-                overlay_figma_fare = fare_figma_extracted(figma_tree, overlay_figma_extracted, [])
-                overlay_web_extracted = extract_elements(overlay_web_img, 0, overlay_web_img.height, matcher)
-                sim_dict_overlay = matcher.calculate_similarity(overlay_figma_img, overlay_web_img, overlay_figma_fare, overlay_web_extracted)
-                matches_overlay, _ = matcher.get_matches(sim_dict_overlay, overlay_figma_fare, overlay_web_extracted, 0.8)
-                if len(matches_overlay) > 0:
-                    return_matches.append(MappingInfo(
-                        componentName=match.figma.name,
-                        destinationFigmaPage=interaction['interactionType']['destinationId'],
-                        destinationUrl=urls,
-                        actualUrl=urls,
-                        failReason=", ".join(match.errorCategories) if match.errorCategories != ['same'] else "",
-                        isSuccess=True,
-                        isRouting=True
-                    ))
-                else:
-                    return_matches.append(InterActionInfo(
-                        componentName=match.figma.name,
-                        expectedAction=interaction['interactionType']['navigation'],
-                        actualAction=interaction['interactionType']['navigation'],
-                        failReason=match.errorCategories,
-                        isSuccess=False,
-                        isRouting=False
-                    ))
+                if overlay_figma_img is not None:
+                    diff_img = ImageChops.difference(web_img, overlay_web_img)
+                    if diff_img.getbbox() is None:
+                        return_matches.append(InteractionMappingInfo(
+                            type="INTERACTION",
+                            componentName=match.figma.name,
+                            expectedAction="OVERLAY",
+                            actualAction="None",
+                            failReason="Overlay is not found",
+                            isSuccess=False,
+                        ))
+                    elif diff_img.getbbox() is not None:
+                        # compare diff_img and overlay_figma_img
+                        diff_img_array = np.array(diff_img)
+                        overlay_figma_img_array = np.array(overlay_figma_img)
+                        if np.array_equal(diff_img_array, overlay_figma_img_array):
+                            return_matches.append(InteractionMappingInfo(
+                                type="INTERACTION",
+                                componentName=match.figma.name,
+                                expectedAction="OVERLAY",
+                                actualAction="OVERLAY",
+                                failReason="Different overlay",
+                                isSuccess=False,
+                            ))
+                        else:
+                            return_matches.append(InteractionMappingInfo(
+                                type="INTERACTION",
+                                componentName=match.figma.name,
+                                expectedAction="OVERLAY",
+                                actualAction="OVERLAY",
+                                failReason="same",
+                                isSuccess=True,
+                            ))
 
     return return_matches
-def process_matches(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[MappingInfo]:
+def process_matches(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
     """매칭 결과 처리"""
     logging.info("Processing matches...")
     return_matches = []
 
     for match in matches:
-        return_matches.append(MappingInfo(
+        return_matches.append(GeneralMappingInfo(
+            type="GENERAL",
             componentName=match.figma.name,
-            destinationFigmaPage="",
-            destinationUrl="",
-            actualUrl="",
             failReason=", ".join(match.errorCategories) if match.errorCategories != ['same'] else "",
             isSuccess=match.errorCategories == ['same'],
-            isRouting=False
         ))        
     return return_matches
 
@@ -293,6 +304,15 @@ def convert_raw_to_tree(figma_tree: Dict, root_image: Image.Image, matcher: Elem
 
     return converted_tree
     
+def get_frame_by_name(figma_tree: Dict, name: str) -> Optional[TreeNode]:
+    if figma_tree['data']['name'] == name:
+        return figma_tree
+    for child in figma_tree['children']:
+        result = get_frame_by_name(child, name)
+        if result is not None:
+            return result
+    return None
+
 def find_best_iou_node(
     root: TreeNode,
     target_rect: Tuple[float, float, float, float]
@@ -524,8 +544,6 @@ def tree_to_mermaid(root, name_map=None):
     recurse(root)
     return "\n".join(lines)
 
-
-
 def get_img_by_id(id: str, figma_raw: List[Dict]) -> Image.Image:
     for figma_element in figma_raw:
         if figma_element['data']['id'] == id:
@@ -537,8 +555,321 @@ def get_img_by_id(id: str, figma_raw: List[Dict]) -> Image.Image:
     return None
 
 
+def categorize_match(match: MatchResult) -> List[str]:
+    """매칭된 요소들을 카테고리별로 분류"""
+    category = []
+    if abs(match.figma.extracted.box[0] - match.web.box[0]) > 10:
+        category.append('different_x')
+    if abs(match.figma.extracted.box[1] - match.web.box[1]) > 10:
+        category.append('different_y')
+    
+    w_f = match.figma.extracted.box[2] - match.figma.extracted.box[0]    
+    h_f = match.figma.extracted.box[3] - match.figma.extracted.box[1]
+    w_w = match.web.box[2] - match.web.box[0]
+    h_w = match.web.box[3] - match.web.box[1]
 
-def mapping(base_url: str, json_url: str):
+    if abs(w_f - w_w) > 10 or abs(h_f - h_w) > 10:
+        category.append('different_size')
+    
+    if len(category) == 0:
+        category.append('same')
+    
+    logging.debug(f"Categorized match for : {category}")
+    return category
+
+
+def extract_elements_worker(args):
+    """스레드 안전한 요소 추출 워커"""
+    image, target_height, task_name = args
+    
+    try:
+        logging.info(f"🔥 Starting {task_name} elements extraction...")
+        start_time = time.time()
+        
+        # 각 워커마다 새로운 matcher 인스턴스 생성
+        local_matcher = ElementExtractor(resize_size=(1024, 1024))
+        extracted_elements = extract_elements(image, 0, target_height, local_matcher)
+        
+        end_time = time.time()
+        logging.info(f"✅ {task_name} elements extraction completed: {end_time - start_time:.2f} seconds")
+        logging.info(f"{task_name} elements extracted: {len(extracted_elements)}")
+        
+        return extracted_elements
+        
+    except Exception as e:
+        logging.error(f"❌ Error in {task_name} elements extraction: {e}")
+        raise e
+
+# 🔧 멀티프로세싱용 전역 변수
+_global_matcher = None
+
+def dummy_worker(x):
+    """오버헤드 측정용 더미 워커 함수"""
+    return x * 2
+
+def init_extraction_worker():
+    """멀티프로세싱 워커 초기화 - 각 프로세스마다 YOLO 모델 로드 (CPU 모드)"""
+    global _global_matcher
+    try:
+        import torch
+        import os
+        
+        # GPU 사용 비활성화 - 이것이 핵심!
+        torch.cuda.set_device(-1)  # CPU 모드 강제
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''  # GPU 숨기기
+        
+        logging.info("🔧 Initializing YOLO model in worker process (CPU mode)...")
+        _global_matcher = ElementExtractor(resize_size=(1024, 1024))
+        
+        # YOLO 모델을 CPU 모드로 강제 설정
+        _global_matcher.yolo.model.to('cpu')
+        
+        logging.info("✅ YOLO model initialized in worker process (CPU mode)")
+    except Exception as e:
+        logging.error(f"❌ Error initializing worker: {e}")
+        raise e
+
+
+def extract_elements_mp_worker(args):
+    """멀티프로세싱용 요소 추출 워커"""
+    image_data, target_height, task_name = args
+    global _global_matcher
+    
+    try:
+        logging.info(f"🔥 Starting {task_name} elements extraction in process...")
+        start_time = time.time()
+        
+        # 이미지 데이터를 PIL Image로 변환
+        if isinstance(image_data, bytes):
+            import io
+            image = Image.open(io.BytesIO(image_data))
+        else:
+            image = image_data
+        
+        # 전역 matcher 사용
+        extracted_elements = extract_elements(image, 0, target_height, _global_matcher)
+        
+        end_time = time.time()
+        logging.info(f"✅ {task_name} elements extraction completed: {end_time - start_time:.2f} seconds")
+        logging.info(f"{task_name} elements extracted: {len(extracted_elements)}")
+        
+        return extracted_elements
+        
+    except Exception as e:
+        logging.error(f"❌ Error in {task_name} elements extraction: {e}")
+        raise e
+
+
+def extract_elements_multiprocessing(figma_image: Image.Image, web_image: Image.Image, target_height: int = 720) -> Tuple[List[ExtractedElement], List[ExtractedElement]]:
+    """
+    멀티프로세싱을 사용한 요소 추출
+    Figma 요소 추출 + Web 요소 추출을 동시에 처리
+    """
+    logging.info("🚀 Starting multiprocessing elements extraction...")
+    
+    # 이미지를 bytes로 변환 (프로세스 간 전달용)
+    import io
+    
+    # Figma 이미지를 bytes로 변환
+    figma_buffer = io.BytesIO()
+    figma_image.save(figma_buffer, format='PNG')
+    figma_data = figma_buffer.getvalue()
+    
+    # Web 이미지를 bytes로 변환
+    web_buffer = io.BytesIO()
+    web_image.save(web_buffer, format='PNG')
+    web_data = web_buffer.getvalue()
+    
+    # 멀티프로세싱으로 요소 추출
+    start_time = time.time()
+    
+    with ProcessPoolExecutor(max_workers=2, initializer=init_extraction_worker) as executor:
+        # Figma와 Web 요소 추출을 동시에
+        figma_future = executor.submit(extract_elements_mp_worker, (figma_data, target_height, "Figma"))
+        web_future = executor.submit(extract_elements_mp_worker, (web_data, target_height, "Web"))
+        
+        # 결과 수집
+        figma_extracted = figma_future.result()
+        web_extracted = web_future.result()
+    
+    end_time = time.time()
+    logging.info(f"🎯 Multiprocessing elements extraction completed: {end_time - start_time:.2f} seconds")
+    
+    return figma_extracted, web_extracted
+
+
+def extract_elements_parallel(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor):
+    """기존 ThreadPoolExecutor 버전 (백업용)"""
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        figma_future = executor.submit(extract_elements_worker, (figma_image, 720, matcher, "Figma"))
+        web_future = executor.submit(extract_elements_worker, (web_image, 720, matcher, "Web"))
+        figma_extracted = figma_future.result()
+        web_extracted = web_future.result()
+    return figma_extracted, web_extracted
+
+def test_extraction_methods_performance(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor) -> Dict[str, float]:
+    """
+    다양한 요소 추출 방법의 성능 비교
+    """
+    results = {}
+    target_height = 720
+    
+    # 1. 순차 처리 테스트
+    logging.info("🔬 Testing sequential extraction...")
+    start_time = time.time()
+    figma_seq = extract_elements(figma_image, 0, target_height, matcher)
+    web_seq = extract_elements(web_image, 0, target_height, matcher)
+    sequential_time = time.time() - start_time
+    results['sequential'] = sequential_time
+    
+    # 2. 스레딩 테스트 (기존)
+    logging.info("🔬 Testing threading extraction...")
+    start_time = time.time()
+    try:
+        figma_threading, web_threading = extract_elements_parallel(figma_image, web_image, matcher)
+        threading_time = time.time() - start_time
+        results['threading'] = threading_time
+    except Exception as e:
+        logging.warning(f"Threading failed: {e}")
+        results['threading'] = float('inf')
+    
+    # 3. 멀티프로세싱 테스트
+    logging.info("🔬 Testing multiprocessing extraction...")
+    start_time = time.time()
+    figma_mp, web_mp = extract_elements_multiprocessing(figma_image, web_image, target_height)
+    multiprocessing_time = time.time() - start_time
+    results['multiprocessing'] = multiprocessing_time
+    
+    # 결과 출력
+    logging.info(f"📊 Extraction Performance Comparison:")
+    logging.info(f"  Sequential:      {sequential_time:.2f}s")
+    logging.info(f"  Threading:       {results.get('threading', 'FAILED')}")
+    logging.info(f"  Multiprocessing: {multiprocessing_time:.2f}s")
+    
+    if results['threading'] != float('inf'):
+        threading_speedup = sequential_time / results['threading']
+        logging.info(f"  Threading Speedup:       {threading_speedup:.2f}x")
+    
+    mp_speedup = sequential_time / multiprocessing_time
+    logging.info(f"  Multiprocessing Speedup: {mp_speedup:.2f}x")
+    
+    return results
+
+
+def analyze_multiprocessing_overhead(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor) -> Dict[str, float]:
+    """
+    멀티프로세싱 오버헤드 세부 분석
+    """
+    import io
+    target_height = 720
+    overhead_analysis = {}
+    
+    logging.info("🔬 Analyzing multiprocessing overhead...")
+    
+    # 1. 이미지 직렬화 시간 측정
+    logging.info("📦 Measuring image serialization overhead...")
+    start_time = time.time()
+    
+    figma_buffer = io.BytesIO()
+    figma_image.save(figma_buffer, format='PNG')
+    figma_data = figma_buffer.getvalue()
+    
+    web_buffer = io.BytesIO()
+    web_image.save(web_buffer, format='PNG')
+    web_data = web_buffer.getvalue()
+    
+    serialization_time = time.time() - start_time
+    overhead_analysis['serialization'] = serialization_time
+    logging.info(f"  Serialization time: {serialization_time:.2f}s")
+    
+    # 2. 이미지 역직렬화 시간 측정
+    logging.info("📥 Measuring image deserialization overhead...")
+    start_time = time.time()
+    
+    figma_restored = Image.open(io.BytesIO(figma_data))
+    web_restored = Image.open(io.BytesIO(web_data))
+    
+    deserialization_time = time.time() - start_time
+    overhead_analysis['deserialization'] = deserialization_time
+    logging.info(f"  Deserialization time: {deserialization_time:.2f}s")
+    
+    # 3. YOLO 모델 로딩 시간 측정
+    logging.info("🔧 Measuring YOLO model loading overhead...")
+    start_time = time.time()
+    
+    new_matcher = ElementExtractor(resize_size=(1024, 1024))
+    
+    model_loading_time = time.time() - start_time
+    overhead_analysis['model_loading'] = model_loading_time
+    logging.info(f"  Model loading time: {model_loading_time:.2f}s")
+    
+    # 4. 프로세스 생성 오버헤드 추정
+    logging.info("⚡ Measuring process creation overhead...")
+    start_time = time.time()
+    
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        future1 = executor.submit(dummy_worker, 1)
+        future2 = executor.submit(dummy_worker, 2)
+        future1.result()
+        future2.result()
+    
+    process_creation_time = time.time() - start_time
+    overhead_analysis['process_creation'] = process_creation_time
+    logging.info(f"  Process creation time: {process_creation_time:.2f}s")
+    
+    # 5. 총 오버헤드 계산
+    total_overhead = (serialization_time + deserialization_time + 
+                     model_loading_time * 2 + process_creation_time)  # 모델 로딩은 2개 프로세스
+    overhead_analysis['total_estimated'] = total_overhead
+    
+    logging.info(f"📊 Overhead Analysis Summary:")
+    logging.info(f"  Serialization:     {serialization_time:.2f}s")
+    logging.info(f"  Deserialization:   {deserialization_time:.2f}s") 
+    logging.info(f"  Model Loading x2:  {model_loading_time * 2:.2f}s")
+    logging.info(f"  Process Creation:  {process_creation_time:.2f}s")
+    logging.info(f"  Total Estimated:   {total_overhead:.2f}s")
+    
+    return overhead_analysis
+
+
+def test_overhead_optimization(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor) -> Dict[str, float]:
+    """
+    오버헤드 최적화 테스트
+    """
+    results = {}
+    target_height = 720
+    
+    # 1. 기본 멀티프로세싱
+    logging.info("🔬 Testing baseline multiprocessing...")
+    start_time = time.time()
+    figma_mp, web_mp = extract_elements_multiprocessing(figma_image, web_image, target_height)
+    baseline_time = time.time() - start_time
+    results['baseline_mp'] = baseline_time
+    
+    # 2. 오버헤드 분석
+    overhead_analysis = analyze_multiprocessing_overhead(figma_image, web_image, matcher)
+    results.update(overhead_analysis)
+    
+    # 3. 실제 vs 예상 오버헤드 비교
+    sequential_time_estimated = baseline_time - overhead_analysis['total_estimated']
+    results['estimated_pure_work'] = sequential_time_estimated
+    
+    logging.info(f"🎯 Overhead Optimization Analysis:")
+    logging.info(f"  Baseline MP time:    {baseline_time:.2f}s")
+    logging.info(f"  Estimated overhead:  {overhead_analysis['total_estimated']:.2f}s")
+    logging.info(f"  Estimated pure work: {sequential_time_estimated:.2f}s")
+    logging.info(f"  Overhead percentage: {(overhead_analysis['total_estimated'] / baseline_time * 100):.1f}%")
+    
+    return results
+
+def get_frame_by_name_from_raw(figma_raw: List[Dict], name: str) -> Optional[Dict]:
+    for data in figma_raw:
+        if data['data']['name'] == name:
+            return data
+    return None
+
+# overlay 비교: 성공, 실패(뜸? 같음?)
+def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False):
     """메인 실행 함수"""
     logging.info(f"Starting mapping process for base_url: {base_url} and json_url: {json_url}")
     target_height = 720
@@ -555,26 +886,45 @@ def mapping(base_url: str, json_url: str):
         matcher = ElementExtractor(resize_size=(1024, 1024))
         figma_raw, figma_interactions = load_figma_data(json_url)
 
-        root_image = get_img_by_id(figma_raw[0]['data']['id'], figma_raw)
+        root_frame = get_frame_by_name_from_raw(figma_raw, current_page)
+        root_image = get_img_by_id(root_frame['data']['id'], figma_raw)
+        figma_tree = convert_raw_to_tree(root_frame, root_image, matcher)
 
-        figma_tree = convert_raw_to_tree(figma_raw[0], root_image, matcher)
-
-        logging.info("Start Figma elements extracting...")
-        figma_extracted = extract_elements(root_image, 0, target_height, matcher)
-        logging.info(f"Figma elements extracted: {len(figma_extracted)}")        
-        fare_figma = fare_figma_extracted(figma_tree, figma_extracted, figma_interactions)
-
-        figma_extracted_boxes = [f.extracted.box for f in fare_figma]
-        visualizer.visualize_boxes(root_image, figma_extracted_boxes, "Figma elements extracted")
 
         logging.info("Start Web page capturing...")
         web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
-        logging.info("Start Web elements extracting...")
-        web_extracted = extract_elements(web_img, 0, target_height, matcher)
+        logging.info("finished web page capturing\n")
 
+        logging.info("Start Figma elements extracting...")
+        start_time = time.time()
+        # 🚀 안전한 멀티프로세싱을 사용한 병렬 요소 추출 (GPU 락 방지)
+        logging.info("🔥 Using SAFE multiprocessing for parallel extraction (CPU mode)...")
+        figma_extracted, web_extracted = extract_elements_multiprocessing_safe(root_image, web_img, target_height)
+        end_time = time.time()
+        logging.info(f"Time taken: {end_time - start_time} seconds for figma elements extracting\n")
+        logging.info(f"Figma elements extracted: {len(figma_extracted)}")
+        logging.info(f"Web elements extracted: {len(web_extracted)}")
+
+        logging.info(f"Figma elements extracted: {len(figma_extracted)}")        
+        fare_figma = fare_figma_extracted(figma_tree, figma_extracted, figma_interactions)
+        logging.info("finished figma elements extracting\n")
+
+        logging.info(f'Start OCR for figma elements')
+        start_time = time.time()
+        for f in fare_figma:
+            f.extracted.text = extract_texts(root_image, matcher, [f.extracted.box])[0]
+        end_time = time.time()
+        logging.info(f"Time taken: {end_time - start_time} seconds for OCR")
+        figma_extracted_boxes = [f.extracted.box for f in fare_figma]
+        # visualizer.visualize_boxes(root_image, figma_extracted_boxes, "Figma elements extracted")
+        logging.info(f'Start OCR for web elements')
+        start_time = time.time()
+        for e in web_extracted:
+            e.text = extract_texts(web_img, matcher, [e.box])[0]
+        end_time = time.time()
+        logging.info(f"Time taken: {end_time - start_time} seconds for OCR")
         web_extracted_boxes = [e.box for e in web_extracted]
-        visualizer.visualize_boxes(web_img, web_extracted_boxes, "Web elements extracted")
-
+        # visualizer.visualize_boxes(web_img, web_extracted_boxes, "Web elements extracted")
         logging.info(f"Web elements extracted: {len(web_extracted)}")
 
         logging.info("Step 3: Separating Figma elements based on interactions")
@@ -585,9 +935,17 @@ def mapping(base_url: str, json_url: str):
 
         logging.info("Step 4a: Matching elements WITH interactions")
         sim_dict_interaction = matcher.calculate_similarity(root_image, web_img, fare_figma_interaction, web_extracted)
-        matches_interaction, _ = matcher.get_matches(sim_dict_interaction, fare_figma_interaction, web_extracted, 0.8)
+        matches_interaction, unmatched_figma_interaction, unmatched_web_interaction = \
+            matcher.get_matches(sim_dict_interaction, fare_figma_interaction, web_extracted, 0.8)
         logging.info(f"Found {len(matches_interaction)} matches for interaction elements.")
 
+        # TODO
+        # 매칭된 요소들과 IOU가 큰 요소가 큰 값 제거 (NMS)
+        # 그래도 매칭이 안되는 요소들을 unmatched로 설정
+
+        
+
+        # visualizer.visualize_boxes(root_image, [m.figma.extracted.box for m in low_confidence_interaction], "Low confidence matches")
         # Get the web elements that have been matched
         matched_web_elements_ids = {id(match.web) for match in matches_interaction}
         web_extracted_remaining = [web_el for web_el in web_extracted if id(web_el) not in matched_web_elements_ids]
@@ -596,22 +954,43 @@ def mapping(base_url: str, json_url: str):
         logging.info("Step 4b: Matching elements WITHOUT interactions")
         if fare_figma_no_interaction and web_extracted_remaining:
             sim_dict_no_interaction = matcher.calculate_similarity(root_image, web_img, fare_figma_no_interaction, web_extracted_remaining)
-            matches_no_interaction, _ = matcher.get_matches(sim_dict_no_interaction, fare_figma_no_interaction, web_extracted_remaining, 0.8)
+            matches_no_interaction, unmatched_figma_no_interaction, unmatched_web_no_interaction = \
+                matcher.get_matches(sim_dict_no_interaction, fare_figma_no_interaction, web_extracted_remaining, 0.8)
             logging.info(f"Found {len(matches_no_interaction)} matches for non-interaction elements.")
         else:
             matches_no_interaction = []
             logging.info("No non-interaction elements or remaining web elements to match.")
 
+        # 교집합 남기도록 필터링
+        unmatched_figma = []    
+        for figma_el in unmatched_figma_interaction:
+            if figma_el in unmatched_figma_no_interaction:
+                unmatched_figma.append(figma_el)
+        for figma_el in unmatched_figma_no_interaction:
+            if figma_el not in unmatched_figma_interaction:
+                unmatched_figma.append(figma_el)
+        unmatched_web = []
+        for web_el in unmatched_web_interaction:
+            if web_el in unmatched_web_no_interaction:
+                unmatched_web.append(web_el)
+        for web_el in unmatched_web_no_interaction:
+            if web_el not in unmatched_web_interaction:
+                unmatched_web.append(web_el)
+
+
         # Combine matches
         matches = matches_interaction + matches_no_interaction
-        
         visualizer.visualize_matches(root_image, web_img, matches, "Matching Visualization")
+        # visualizer.visualize_boxes(root_image, [m.figma.extracted.box for m in unmatched_figma], "Unmatched Figma elements")
+        # visualizer.visualize_boxes(web_img, [m.web.box for m in unmatched_web], "Unmatched Web elements")
+        # return []
         logging.info(f"Found {len(matches)} total matches.")
     
         logging.info("Step 5: Processing Matches")
         return_matches = []
-        return_matches.append(match_interaction(matcher, matches_interaction, web_navigator, figma_interactions, figma_tree, figma_raw))
-        return_matches.append(process_matches(matcher, matches_no_interaction, web_navigator, figma_interactions, figma_tree, figma_raw))
+        # 리스트를 extend로 합쳐서 중첩된 리스트 구조를 평평하게 만듦
+        return_matches.extend(match_interaction(matcher, matches_interaction, web_navigator, web_img, figma_interactions, figma_tree, figma_raw))
+        return_matches.extend(process_matches(matcher, matches_no_interaction, web_navigator, figma_interactions, figma_tree, figma_raw))
 
         return return_matches
 
@@ -624,3 +1003,176 @@ def mapping(base_url: str, json_url: str):
         stats = pstats.Stats(profiler).sort_stats('cumtime')
         stats.dump_stats('profile_results.prof')
         logging.info("Profiling results saved to profile_results.prof")
+
+
+def test_multiprocessing_extraction(base_url: str, json_url: str):
+    """
+    멀티프로세싱 요소 추출 테스트 전용 함수
+    """
+    logging.info("🧪 Starting multiprocessing extraction test...")
+    return mapping(base_url, json_url, test_performance=True)
+
+
+def quick_mp_vs_threading_comparison(base_url: str, json_url: str):
+    """
+    빠른 멀티프로세싱 vs 스레딩 비교
+    """
+    logging.info("⚡ Quick multiprocessing vs threading comparison...")
+    
+    # 멀티프로세싱 처리
+    logging.info("Testing multiprocessing extraction...")
+    start_time = time.time()
+    mapping(base_url, json_url, test_performance=False)
+    mp_time = time.time() - start_time
+    
+    logging.info(f"🏁 Multiprocessing completed in: {mp_time:.2f}s")
+    
+    return {
+        'multiprocessing': mp_time,
+        'status': 'completed'
+    }
+
+def quick_overhead_analysis(base_url: str, json_url: str):
+    """
+    빠른 오버헤드 분석 실행
+    """
+    logging.info("🔍 Starting quick overhead analysis...")
+    
+    # 기본 설정
+    target_height = 720
+    web_navigator = WebNavigator(headless=True, base_url=base_url)
+    matcher = ElementExtractor(resize_size=(1024, 1024))
+    
+    try:
+        # 이미지 준비
+        figma_raw, figma_interactions = load_figma_data(json_url)
+        root_image = get_img_by_id(figma_raw[0]['data']['id'], figma_raw)
+        web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
+        
+        # 오버헤드 분석 실행
+        overhead_results = test_overhead_optimization(root_image, web_img, matcher)
+        
+        return overhead_results
+        
+    finally:
+        if web_navigator.driver is not None:
+            web_navigator.quit()
+
+
+# 기존 mapping 함수에 오버헤드 분석 옵션 추가
+
+def extract_elements_multiprocessing_safe(figma_image: Image.Image, web_image: Image.Image, target_height: int = 720) -> Tuple[List[ExtractedElement], List[ExtractedElement]]:
+    """
+    멀티프로세싱을 사용한 요소 추출 (GPU 락 경합 해결된 안전 버전)
+    """
+    logging.info("🚀 Starting SAFE multiprocessing elements extraction (CPU mode)...")
+    
+    # 이미지를 bytes로 변환 (프로세스 간 전달용)
+    import io
+    
+    # Figma 이미지를 bytes로 변환
+    figma_buffer = io.BytesIO()
+    figma_image.save(figma_buffer, format='PNG')
+    figma_data = figma_buffer.getvalue()
+    
+    # Web 이미지를 bytes로 변환
+    web_buffer = io.BytesIO()
+    web_image.save(web_buffer, format='PNG')
+    web_data = web_buffer.getvalue()
+    
+    # 멀티프로세싱으로 요소 추출 (CPU 모드)
+    start_time = time.time()
+    
+    # multiprocessing start method를 'spawn'으로 설정 (더 안전)
+    ctx = multiprocessing.get_context('spawn')
+    
+    with ProcessPoolExecutor(max_workers=2, initializer=init_extraction_worker, mp_context=ctx) as executor:
+        # Figma와 Web 요소 추출을 동시에
+        figma_future = executor.submit(extract_elements_mp_worker, (figma_data, target_height, "Figma"))
+        web_future = executor.submit(extract_elements_mp_worker, (web_data, target_height, "Web"))
+        
+        # 결과 수집
+        figma_extracted = figma_future.result()
+        web_extracted = web_future.result()
+    
+    end_time = time.time()
+    logging.info(f"🎯 SAFE Multiprocessing elements extraction completed: {end_time - start_time:.2f} seconds")
+    
+    return figma_extracted, web_extracted
+
+
+def test_gpu_lock_fix(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor) -> Dict[str, float]:
+    """
+    GPU 락 수정 전후 성능 비교 테스트
+    """
+    results = {}
+    target_height = 720
+    
+    # 1. 기존 멀티프로세싱 (GPU 락 발생 가능)
+    logging.info("🔬 Testing old multiprocessing (may have GPU lock)...")
+    start_time = time.time()
+    try:
+        figma_old, web_old = extract_elements_multiprocessing(figma_image, web_image, target_height)
+        old_mp_time = time.time() - start_time
+        results['old_multiprocessing'] = old_mp_time
+        logging.info(f"  Old multiprocessing: {old_mp_time:.2f}s")
+    except Exception as e:
+        old_mp_time = float('inf')
+        results['old_multiprocessing'] = old_mp_time
+        logging.warning(f"  Old multiprocessing failed: {e}")
+    
+    # 2. 새로운 안전한 멀티프로세싱 (CPU 모드)
+    logging.info("🔬 Testing new SAFE multiprocessing (CPU mode)...")
+    start_time = time.time()
+    figma_safe, web_safe = extract_elements_multiprocessing_safe(figma_image, web_image, target_height)
+    safe_mp_time = time.time() - start_time
+    results['safe_multiprocessing'] = safe_mp_time
+    logging.info(f"  Safe multiprocessing: {safe_mp_time:.2f}s")
+    
+    # 3. 순차 처리 비교
+    logging.info("🔬 Testing sequential processing...")
+    start_time = time.time()
+    figma_seq = extract_elements(figma_image, 0, target_height, matcher)
+    web_seq = extract_elements(web_image, 0, target_height, matcher)
+    sequential_time = time.time() - start_time
+    results['sequential'] = sequential_time
+    logging.info(f"  Sequential: {sequential_time:.2f}s")
+    
+    # 결과 분석
+    if results['old_multiprocessing'] != float('inf'):
+        improvement = results['old_multiprocessing'] / safe_mp_time
+        logging.info(f"📊 GPU Lock Fix Results:")
+        logging.info(f"  Old MP (with lock): {results['old_multiprocessing']:.2f}s")
+        logging.info(f"  Safe MP (CPU):      {safe_mp_time:.2f}s")
+        logging.info(f"  Improvement:        {improvement:.2f}x faster")
+    
+    safe_vs_sequential = sequential_time / safe_mp_time
+    logging.info(f"  Safe MP vs Sequential: {safe_vs_sequential:.2f}x speedup")
+    
+    return results
+
+def test_gpu_lock_fix_quick(base_url: str, json_url: str):
+    """
+    빠른 GPU 락 수정 테스트 실행
+    """
+    logging.info("🔍 Starting GPU lock fix test...")
+    
+    # 기본 설정
+    target_height = 720
+    web_navigator = WebNavigator(headless=True, base_url=base_url)
+    matcher = ElementExtractor(resize_size=(1024, 1024))
+    
+    try:
+        # 이미지 준비
+        figma_raw, figma_interactions = load_figma_data(json_url)
+        root_image = get_img_by_id(figma_raw[0]['data']['id'], figma_raw)
+        web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
+        
+        # GPU 락 수정 테스트 실행
+        lock_fix_results = test_gpu_lock_fix(root_image, web_img, matcher)
+        
+        return lock_fix_results
+        
+    finally:
+        if web_navigator.driver is not None:
+            web_navigator.quit()

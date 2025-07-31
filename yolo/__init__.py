@@ -25,7 +25,7 @@ from .models import (
 from .element_matcher import ElementExtractor
 from .tree_loader import TreeNode
 from .visualize_interaction import FigmaVisualizer
-
+from .errorChecker import ErrorChecker
 __all__ = [
     # Enum 클래스들
     'InteractionType',
@@ -47,6 +47,7 @@ __all__ = [
     'ElementExtractor',
     'TreeNode',
     'FigmaVisualizer',
+    'ErrorChecker',
 ]
 
 __version__ = "1.0.0" 

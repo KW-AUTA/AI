@@ -1,3 +1,8 @@
+# NumPy와 PyTorch 호환성을 위한 환경 변수 설정
+import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+os.environ['OMP_NUM_THREADS'] = '1'
+
 from fastapi import FastAPI
 from routes import test_route, evaluate
 from fastapi.staticfiles import StaticFiles
