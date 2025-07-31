@@ -93,7 +93,7 @@ class ElementExtractor:
         self.yolo = YOLO(yolo_model_path, task='detect', verbose=False)
         self.resize_size = resize_size
         # tesserocr 설정
-        tessdata_dir = "/usr/local/share/tessdata"
+        tessdata_dir = "/usr/share/tesseract-ocr/5/tessdata"
         self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
         self.api.SetPageSegMode(tesserocr.PSM.SINGLE_BLOCK)
         self.api.SetVariable("tessedit_char_whitelist", "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz가-힣 ")
