@@ -1,3 +1,7 @@
+# .env 파일 로드
+from dotenv import load_dotenv
+load_dotenv()
+
 # NumPy와 PyTorch 호환성을 위한 환경 변수 설정
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
