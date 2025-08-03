@@ -35,6 +35,15 @@ conda activate auta
 ```
 
 ### 3. Python 패키지 설치
+
+#### 방법 1: environment.yml 사용 (권장)
+```bash
+# conda 환경을 한 번에 생성하고 패키지 설치
+conda env create -f environment.yml
+conda activate auta
+```
+
+#### 방법 2: requirements.txt 사용
 ```bash
 pip install -r requirements.txt
 ```
