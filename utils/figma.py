@@ -7,22 +7,34 @@ from typing import List
 # 유틸 함수들
 def extract_ui_elements(node: dict, depth: int = 0) -> list[dict]:
     elements = []
+
+    # JSON 구조 상 node는 {"data": {...}, "children": [...]}
+    data = node.get("data", {})
+    if not isinstance(data, dict):
+        return elements
+
     allowed_types = {"TEXT", "RECTANGLE", "FRAME", "INSTANCE", "VECTOR"}
-    node_type = node.get("type")
-    node_name = node.get("name", "").strip()
-    if node_type in allowed_types and node_name:
+
+    node_type = data.get("type")
+    node_name = data.get("name", "").strip()
+
+    if isinstance(node_type, str) and node_type in allowed_types and isinstance(node_name, str) and node_name:
         elements.append({
-            "id": node["id"],
+            "id": data.get("id"),
             "name": node_name,
             "type": node_type,
             "depth": depth,
-            "absoluteX": node.get("absoluteX", 0),
-            "absoluteY": node.get("absoluteY", 0),
-            "width": node.get("width", 0),
-            "height": node.get("height", 0)
+            "absoluteX": data.get("absolutePosition", {}).get("x", 0),
+            "absoluteY": data.get("absolutePosition", {}).get("y", 0),
+            "width": data.get("absolutePosition", {}).get("width", 0),
+            "height": data.get("absolutePosition", {}).get("height", 0)
         })
-    for child in node.get("children", []):
-        elements.extend(extract_ui_elements(child, depth + 1))
+
+    children = node.get("children", [])
+    if isinstance(children, list):
+        for child in children:
+            elements.extend(extract_ui_elements(child, depth + 1))
+
     return elements
 
 def summarize_elements(elements: list[dict]) -> str:

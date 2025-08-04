@@ -8,4 +8,4 @@ router = APIRouter()
 @router.post("/evaluate-ui-with-highlight")
 async def evaluate_ui_with_highlight(request: UITestRequest):
     result = await evaluate_all_frames_logic(request.figmaJsonUrl)
-    return JSONResponse(content=result)  # 명시적 반환
+    return JSONResponse(content=result)
