@@ -1,5 +1,6 @@
 import os
 import uuid
+import logging
 from datetime import datetime
 from pathlib import Path
 from PIL import ImageDraw, Image
@@ -20,25 +21,39 @@ from utils.figma import (
 )
 from utils.image import decode_base64_image
 
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 STATIC_DIR = Path("static")
 STATIC_DIR.mkdir(exist_ok=True)
 
 async def evaluate_all_frames_logic(figma_url: str):
+    logger.info("Figma 평가 로직 시작: %s", figma_url)
+
     figmaJson = load_figma_json_from_s3(figma_url)
     frames = [node["data"] for node in figmaJson.get("tree", [])]
+    logger.info("총 %d개 프레임 감지됨", len(frames))
 
     results = []
     scores = []
     unique_id = f"{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
     save_dir = STATIC_DIR / unique_id
     save_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("이미지 저장 디렉토리 생성됨: %s", save_dir)
 
     for frame in frames:
+        frame_name = frame.get("name", "Unnamed")
+        logger.info("프레임 분석 시작: %s", frame_name)
         try:
             elements = extract_ui_elements(frame)
             summary = summarize_elements(elements)
-            task = generate_task_from_frame_name(frame.get("name", "frame"))
+            task = generate_task_from_frame_name(frame_name)
             persona = generate_persona()
             prompt = generate_prompt_with_id(task, summary, persona)
 
@@ -46,6 +61,7 @@ async def evaluate_all_frames_logic(figma_url: str):
             if not image_url:
                 raise ValueError("No image URL found in frame")
 
+            logger.info("GPT-4o 평가 요청 시작 (프레임: %s)", frame_name)
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -59,6 +75,7 @@ async def evaluate_all_frames_logic(figma_url: str):
                 max_tokens=1500
             )
             llm_reply = response.choices[0].message.content
+            logger.info("GPT 응답 수신 완료 (프레임: %s)", frame_name)
 
             problem_ids = extract_problem_ids_from_llm(llm_reply)
             bounding_elements = find_elements_by_ids(frame, problem_ids)
@@ -67,13 +84,10 @@ async def evaluate_all_frames_logic(figma_url: str):
             image = Image.open(BytesIO(image_data)).convert("RGB")
 
             frame_pos = frame["absolutePosition"]
-            frame_width = frame_pos["width"]
-            frame_height = frame_pos["height"]
+            scale_x = image.width / frame_pos["width"]
+            scale_y = image.height / frame_pos["height"]
             origin_x = frame_pos["x"]
             origin_y = frame_pos["y"]
-
-            scale_x = image.width / frame_width
-            scale_y = image.height / frame_height
 
             draw = ImageDraw.Draw(image)
             for el in bounding_elements:
@@ -87,6 +101,7 @@ async def evaluate_all_frames_logic(figma_url: str):
             filename = f"{uuid.uuid4().hex}.png"
             save_path = save_dir / filename
             image.save(save_path, format="PNG")
+            logger.info("하이라이트 이미지 저장 완료: %s", save_path)
 
             evaluation = parse_llm_usability_report(llm_reply)
 
@@ -95,14 +110,19 @@ async def evaluate_all_frames_logic(figma_url: str):
                 "frameSummary": evaluation["frame_summary"],
                 "highlightImageUrl": f"/static/{unique_id}/{filename}"
             })
+            logger.info("프레임 평가 완료: %s (점수: %s)", frame_name, evaluation["usability_score"])
+
         except Exception as e:
-            print(f"[ERROR] Frame {frame.get('name', 'Unnamed')} 평가 실패: {e}")
+            logger.error("프레임 평가 실패: %s, 이유: %s", frame_name, e)
             results.append({
-                "frame_name": frame.get("name", "Unnamed Frame"),
+                "frame_name": frame_name,
                 "error": str(e)
             })
-        break
+        break  # 1개만 평가할 경우 유지, 전체 평가 원하면 제거
+
     overall_score = round(sum(scores) / len(scores), 2) if scores else 0.0
+    logger.info("전체 평가 종료. 종합 점수: %s", overall_score)
+
     return {
         "usabilityScore": int(overall_score),
         "evaluations": results
