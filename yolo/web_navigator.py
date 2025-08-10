@@ -22,6 +22,7 @@ class WebNavigator:
 		service = ChromeService(ChromeDriverManager().install())
 		self.driver = webdriver.Chrome(service=service, options=self.opts)
 
+
 	def navigate(self, url: str, window_size: Tuple[int, int] = (1080, 1440)):
 		"""웹 페이지로 이동"""
 		self.driver.get(url)

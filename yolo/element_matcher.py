@@ -79,9 +79,7 @@ from torch.nn import Conv2d
 
 # 모델 import
 from .models import (
-    InteractionType, TriggerType, NavigationType, PositionType,
-    Vector, Overlay, NodeInteraction, UrlInteraction, Interaction,
-    FigmaElement, WebElement, MatchResult, ExtractedElement
+    MatchResult, ExtractedElement
 )
 
 class ElementExtractor:
@@ -89,11 +87,11 @@ class ElementExtractor:
     def __init__(self, yolo_model_path: str = None, resize_size: Tuple[int, int] = (736, 736)):
         current_dir = os.path.dirname(__file__)
         if yolo_model_path is None:
-            yolo_model_path = os.path.join(current_dir, "best.pt")
+            yolo_model_path = os.path.join(current_dir, "best_forest.pt")
         self.yolo = YOLO(yolo_model_path, task='detect', verbose=False)
         self.resize_size = resize_size
         # tesserocr 설정
-        tessdata_dir = "/usr/share/tesseract-ocr/5/tessdata"
+        tessdata_dir = "/usr/local/share/tessdata"
         self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
         self.api.SetPageSegMode(tesserocr.PSM.SINGLE_BLOCK)
         self.api.SetVariable("tessedit_char_whitelist", "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz가-힣 ")

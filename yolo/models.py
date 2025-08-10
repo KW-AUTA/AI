@@ -4,69 +4,14 @@ from enum import Enum
 import torch
 import numpy as np
 
-# Interaction 관련 Enum들
-class InteractionType(Enum):
-    NODE = "NODE"
-    BACK = "BACK"
-    CLOSE = "CLOSE"
-    URL = "URL"
 
-class TriggerType(Enum):
-    ON_CLICK = "ON_CLICK"
-    ON_HOVER = "ON_HOVER"
-    ON_PRESS = "ON_PRESS"
-    ON_DRAG = "ON_DRAG"
 
-class NavigationType(Enum):
-    NAVIGATE = "NAVIGATE"
-    SWAP = "SWAP"
-    OVERLAY = "OVERLAY"
-    SCROLL_TO = "SCROLL_TO"
-    CHANGE_TO = "CHANGE_TO"
-
-class PositionType(Enum):
-    CENTER = "CENTER"
-    TOP_LEFT = "TOP_LEFT"
-    TOP_CENTER = "TOP_CENTER"
-    TOP_RIGHT = "TOP_RIGHT"
-    BOTTOM_LEFT = "BOTTOM_LEFT"
-    BOTTOM_CENTER = "BOTTOM_CENTER"
-    BOTTOM_RIGHT = "BOTTOM_RIGHT"
-    MANUAL = "MANUAL"
-
-# Interaction 관련 데이터 클래스들
-@dataclass
-class Vector:
-    """2D 벡터를 나타내는 클래스"""
-    x: float
-    y: float
-
-@dataclass
-class Overlay:
-    """오버레이 설정을 나타내는 클래스"""
-    positionType: PositionType
-    position: Optional[Vector] = None
-
-@dataclass
-class NodeInteraction:
-    """노드 간 상호작용을 나타내는 클래스"""
-    navigation: NavigationType
-    sourceId: str
-    destinationId: str
-    overlay: Optional[Overlay] = None
 
 @dataclass
 class UrlInteraction:
     """URL 상호작용을 나타내는 클래스"""
     url: str
     target: str = "_blank"  # "_blank", "_self", "_parent", "_top"
-
-@dataclass
-class Interaction:
-    """상호작용을 나타내는 메인 클래스"""
-    type: InteractionType
-    trigger: TriggerType
-    interactionType: Union[NodeInteraction, UrlInteraction]
 
 
 @dataclass(kw_only=True, frozen=True, slots=True)

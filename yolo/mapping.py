@@ -23,6 +23,7 @@ import pstats
 from .element_matcher import ElementExtractor
 import matplotlib.pyplot as plt
 from PIL import ImageChops
+from .figma import FigmaDocument, FigmaFrame
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -98,6 +99,7 @@ def process_images(figma_url: str, web_navigator: WebNavigator, target_height: i
     response = requests.get(figma_url)
     response.raise_for_status()
 
+    
     figma_json = response.json()
     root = figma_json['tree'][0]
     frame_img = decode_base64_image(root['data']['image'])
@@ -118,14 +120,48 @@ def extract_texts(img: Image.Image, matcher: ElementExtractor, boxes: List[Tuple
         texts.append(text)
     return texts
 
-def extract_elements(img: Image.Image, start_height: int, windowing_height: int, matcher: ElementExtractor, iou_threshold: float = 0.5) -> List[ExtractedElement]:
+
+def extract_boxes_from_node(node):
+    """
+    Recursively extracts absolute bounding box information from a node and its children.
+    """
+    boxes = []
+    if "absolutePosition" in node.get("data", {}):
+        pos = node["data"]["absolutePosition"]
+        print("pos", pos)
+        boxes.append({
+            "x": pos.get("x", 0),
+            "y": pos.get("y", 0),
+            "width": pos.get("width", 0),
+            "height": pos.get("height", 0)
+        })
+    
+    if "children" in node:
+        for child in node["children"]:
+            boxes.extend(extract_boxes_from_node(child))
+    return boxes
+
+def get_start_x(tree: TreeNode) -> int:
+    min_x = 0
+
+    def get_start_x_recursive(node: TreeNode):
+        nonlocal min_x
+        if node.data.relative_render_position['x'] < min_x:
+            min_x = node.data.relative_render_position['x']
+        for child in node.children:
+            get_start_x_recursive(child)
+    get_start_x_recursive(tree)
+    return min_x
+
+def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matcher: ElementExtractor, iou_threshold: float = 0.5) -> List[ExtractedElement]:
     """이미지에서 요소 추출 (순차 처리 버전)"""
     logging.info(f"Extracting elements from image with height {img.height} using sequential windowing...")
     
     windows_to_process = []
     current_height = 0
     while current_height < img.height:
-        crop_img = img.crop((0, current_height, img.width, min(current_height + windowing_height, img.height)))
+        print("start_x", start_x)
+        crop_img = img.crop((start_x, current_height, img.width, min(current_height + windowing_height, img.height)))
         windows_to_process.append((crop_img, current_height))
         current_height += windowing_height * 0.75
 
@@ -197,7 +233,6 @@ def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web
     return_matches = []
     for match in matches:
         interaction = get_interaction_by_id(match.figma.id, interactions)
-        print(interaction['interactionType']['navigation'])
         if interaction['interactionType']['navigation'] == 'NAVIGATE':
             center_x = float(match.figma.extracted.box[0] + match.figma.extracted.box[2]) / 2
             center_y = float(match.figma.extracted.box[1] + match.figma.extracted.box[3]) / 2
@@ -229,11 +264,23 @@ def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web
             center_y = float(match.figma.extracted.box[1] + match.figma.extracted.box[3]) / 2
             element, xpath = web_navigator.get_element_at_coordinate_and_xpath(center_x, center_y)
             if element is not None and xpath is not None:
+                current_url = web_navigator.driver.current_url
                 element.click()
+                click_url = web_navigator.driver.current_url
+                if click_url != current_url:
+                    return_matches.append(InteractionMappingInfo(
+                        type="INTERACTION",
+                        componentName=match.figma.name,
+                        expectedAction="OVERLAY",
+                        actualAction="NAVIGATE",
+                        failReason="Navigate instead of overlay",
+                        isSuccess=False,
+                    ))
                 overlay_web_img = web_navigator.capture_full_page()
                 overlay_figma_img = get_img_by_id(interaction['interactionType']['destinationId'], figma_raw)
                 if overlay_figma_img is not None:
                     diff_img = ImageChops.difference(web_img, overlay_web_img)
+
                     if diff_img.getbbox() is None:
                         return_matches.append(InteractionMappingInfo(
                             type="INTERACTION",
@@ -244,19 +291,20 @@ def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web
                             isSuccess=False,
                         ))
                     elif diff_img.getbbox() is not None:
-                        # compare diff_img and overlay_figma_img
-                        diff_img_array = np.array(diff_img)
+                        # Extract the overlay region from diff_img
+                        bbox = diff_img.getbbox()
+                        overlay_region = overlay_web_img.crop(bbox)
+                        
+                        # Resize overlay_region to match overlay_figma_img size
+                        
+                        # Compare the resized images
+                        overlay_region_array = np.array(overlay_region)
                         overlay_figma_img_array = np.array(overlay_figma_img)
-                        if np.array_equal(diff_img_array, overlay_figma_img_array):
-                            return_matches.append(InteractionMappingInfo(
-                                type="INTERACTION",
-                                componentName=match.figma.name,
-                                expectedAction="OVERLAY",
-                                actualAction="OVERLAY",
-                                failReason="Different overlay",
-                                isSuccess=False,
-                            ))
-                        else:
+
+                        Image.fromarray(overlay_region_array).save("overlay_region_array.png")
+                        Image.fromarray(overlay_figma_img_array).save("overlay_figma_img_array.png")
+
+                        if np.array_equal(overlay_region_array, overlay_figma_img_array):
                             return_matches.append(InteractionMappingInfo(
                                 type="INTERACTION",
                                 componentName=match.figma.name,
@@ -265,6 +313,17 @@ def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web
                                 failReason="same",
                                 isSuccess=True,
                             ))
+                        else:
+                            return_matches.append(InteractionMappingInfo(
+                                type="INTERACTION",
+                                componentName=match.figma.name,
+                                expectedAction="OVERLAY",
+                                actualAction="OVERLAY",
+                                failReason="Different overlay",
+                                isSuccess=False,
+                            ))
+                    if "afterInteraction" in interaction:
+                        print(interaction['afterInteraction'])
 
     return return_matches
 def process_matches(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
@@ -289,7 +348,7 @@ def load_figma_json(json_url: str) -> Dict:
     logging.info("Figma JSON loaded successfully.")
     return figma_json
 
-def convert_raw_to_tree(figma_tree: Dict, root_image: Image.Image, matcher: ElementExtractor, level: int = 0) -> TreeNode:
+def convert_raw_to_tree(figma_tree: Dict, root_image: Image.Image, level: int = 0) -> TreeNode:
     logging.debug(f"Converting raw data to tree at level {level}")
     converted_tree = TreeNode(FigmaElement(
         id=figma_tree['data']['id'],
@@ -300,7 +359,7 @@ def convert_raw_to_tree(figma_tree: Dict, root_image: Image.Image, matcher: Elem
         relative_render_position=figma_tree['data']['relativeRenderPosition'],
     ))
     for child in figma_tree['children']:
-        converted_tree.add_child(convert_raw_to_tree(child, root_image, matcher, level + 1))
+        converted_tree.add_child(convert_raw_to_tree(child, root_image, level + 1))
 
     return converted_tree
     
@@ -367,7 +426,7 @@ def match_all_extracted(
     """
 
     logging.info(f"Matching tree nodes to {len(extracted_list)} extracted boxes, prioritizing interactions.")
-    
+
     interaction_source_ids = {interaction['interactionType']['sourceId'] for interaction in interactions}
     
     all_nodes = []
@@ -587,7 +646,7 @@ def extract_elements_worker(args):
         start_time = time.time()
         
         # 각 워커마다 새로운 matcher 인스턴스 생성
-        local_matcher = ElementExtractor(resize_size=(1024, 1024))
+        local_matcher = ElementExtractor(resize_size=(736, 736))
         extracted_elements = extract_elements(image, 0, target_height, local_matcher)
         
         end_time = time.time()
@@ -632,7 +691,7 @@ def init_extraction_worker():
 
 def extract_elements_mp_worker(args):
     """멀티프로세싱용 요소 추출 워커"""
-    image_data, target_height, task_name = args
+    image_data, target_height, task_name, start_x = args
     global _global_matcher
     
     try:
@@ -647,7 +706,7 @@ def extract_elements_mp_worker(args):
             image = image_data
         
         # 전역 matcher 사용
-        extracted_elements = extract_elements(image, 0, target_height, _global_matcher)
+        extracted_elements = extract_elements(image, start_x, target_height, _global_matcher)
         
         end_time = time.time()
         logging.info(f"✅ {task_name} elements extraction completed: {end_time - start_time:.2f} seconds")
@@ -701,8 +760,8 @@ def extract_elements_multiprocessing(figma_image: Image.Image, web_image: Image.
 def extract_elements_parallel(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor):
     """기존 ThreadPoolExecutor 버전 (백업용)"""
     with ThreadPoolExecutor(max_workers=2) as executor:
-        figma_future = executor.submit(extract_elements_worker, (figma_image, 720, matcher, "Figma"))
-        web_future = executor.submit(extract_elements_worker, (web_image, 720, matcher, "Web"))
+        figma_future = executor.submit(extract_elements_worker, (figma_image, 720, matcher, "Figma", min_x))
+        web_future = executor.submit(extract_elements_worker, (web_image, 720, matcher, "Web", min_x))
         figma_extracted = figma_future.result()
         web_extracted = web_future.result()
     return figma_extracted, web_extracted
@@ -868,7 +927,6 @@ def get_frame_by_name_from_raw(figma_raw: List[Dict], name: str) -> Optional[Dic
             return data
     return None
 
-# overlay 비교: 성공, 실패(뜸? 같음?)
 def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False):
     """메인 실행 함수"""
     logging.info(f"Starting mapping process for base_url: {base_url} and json_url: {json_url}")
@@ -883,30 +941,57 @@ def mapping(base_url: str, current_page: str, json_url: str, test_performance: b
     try:
         # 1. 이미지 처리
         logging.info("Step 1: Image Processing")
-        matcher = ElementExtractor(resize_size=(1024, 1024))
+        matcher = ElementExtractor(resize_size=(540, 540))
         figma_raw, figma_interactions = load_figma_data(json_url)
 
         root_frame = get_frame_by_name_from_raw(figma_raw, current_page)
+        figma_frame = FigmaFrame(root_frame)
+        figma_frame.visualize_raw()
+        return []
         root_image = get_img_by_id(root_frame['data']['id'], figma_raw)
-        figma_tree = convert_raw_to_tree(root_frame, root_image, matcher)
-
-
+        figma_tree = convert_raw_to_tree(root_frame, root_image)
+        start_x = get_start_x(figma_tree)
+        
         logging.info("Start Web page capturing...")
-        web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
+        # web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
         logging.info("finished web page capturing\n")
 
         logging.info("Start Figma elements extracting...")
         start_time = time.time()
         # 🚀 안전한 멀티프로세싱을 사용한 병렬 요소 추출 (GPU 락 방지)
         logging.info("🔥 Using SAFE multiprocessing for parallel extraction (CPU mode)...")
-        figma_extracted, web_extracted = extract_elements_multiprocessing_safe(root_image, web_img, target_height)
+        boxes = extract_boxes_from_node(root_frame)
+        fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+        ax.imshow(root_image)
+        ax.set_title(f"Visualization of {root_frame.get('name', 'N/A')}")
+        ax.axis('off')
+
+        root_render_pos = root_frame.get("absoluteRenderPosition", {})
+        root_render_x = root_render_pos.get("x", 0) + start_x
+        root_render_y = root_render_pos.get("y", 0) + 0
+
+        for bbox in boxes:
+            adjusted_x = bbox["x"] - root_render_x
+            adjusted_y = bbox["y"] - root_render_y
+            ax.add_patch(plt.Rectangle(
+				(adjusted_x, adjusted_y), bbox["width"], bbox["height"], 
+				fill=False, edgecolor='red', linewidth=2
+			))
+        plt.show()
+        return []   
+        figma_extracted, web_extracted = extract_elements_multiprocessing_safe(root_image, web_img, target_height, start_x)
         end_time = time.time()
         logging.info(f"Time taken: {end_time - start_time} seconds for figma elements extracting\n")
         logging.info(f"Figma elements extracted: {len(figma_extracted)}")
         logging.info(f"Web elements extracted: {len(web_extracted)}")
 
+        visualizer.visualize_boxes(root_image, [f.box for f in figma_extracted], "Figma elements extracted")
+        # visualizer.visualize_boxes(web_img, [e.box for e in web_extracted], "Web elements extracted")
+
         logging.info(f"Figma elements extracted: {len(figma_extracted)}")        
         fare_figma = fare_figma_extracted(figma_tree, figma_extracted, figma_interactions)
+        visualizer.visualize_boxes(root_image, [f.extracted.box for f in fare_figma], "fare")
+        return []
         logging.info("finished figma elements extracting\n")
 
         logging.info(f'Start OCR for figma elements')
@@ -1061,7 +1146,7 @@ def quick_overhead_analysis(base_url: str, json_url: str):
 
 # 기존 mapping 함수에 오버헤드 분석 옵션 추가
 
-def extract_elements_multiprocessing_safe(figma_image: Image.Image, web_image: Image.Image, target_height: int = 720) -> Tuple[List[ExtractedElement], List[ExtractedElement]]:
+def extract_elements_multiprocessing_safe(figma_image: Image.Image, web_image: Image.Image, target_height: int = 720, start_x: int = 0) -> Tuple[List[ExtractedElement], List[ExtractedElement]]:
     """
     멀티프로세싱을 사용한 요소 추출 (GPU 락 경합 해결된 안전 버전)
     """
@@ -1088,8 +1173,8 @@ def extract_elements_multiprocessing_safe(figma_image: Image.Image, web_image: I
     
     with ProcessPoolExecutor(max_workers=2, initializer=init_extraction_worker, mp_context=ctx) as executor:
         # Figma와 Web 요소 추출을 동시에
-        figma_future = executor.submit(extract_elements_mp_worker, (figma_data, target_height, "Figma"))
-        web_future = executor.submit(extract_elements_mp_worker, (web_data, target_height, "Web"))
+        figma_future = executor.submit(extract_elements_mp_worker, (figma_data, target_height, "Figma", start_x))
+        web_future = executor.submit(extract_elements_mp_worker, (web_data, target_height, "Web", start_x))
         
         # 결과 수집
         figma_extracted = figma_future.result()

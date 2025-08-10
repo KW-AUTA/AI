@@ -6,17 +6,9 @@ YOLO 기반 요소 매칭 패키지
 
 from .models import (
     # Enum 클래스들
-    InteractionType,
-    TriggerType,
-    NavigationType,
-    PositionType,
     
     # 데이터 클래스들
-    Vector,
-    Overlay,
-    NodeInteraction,
     UrlInteraction,
-    Interaction,
     FigmaElement,
     WebElement,
     MatchResult
@@ -26,19 +18,13 @@ from .element_matcher import ElementExtractor
 from .tree_loader import TreeNode
 from .visualize_interaction import FigmaVisualizer
 from .errorChecker import ErrorChecker
+from .figma import FigmaDataLoader, FigmaDocument, FigmaFrame, FigmaElementTree, FigmaBox, FigmaBoxPair
+
 __all__ = [
     # Enum 클래스들
-    'InteractionType',
-    'TriggerType', 
-    'NavigationType',
-    'PositionType',
-    
+        
     # 데이터 클래스들
-    'Vector',
-    'Overlay',
-    'NodeInteraction',
     'UrlInteraction',
-    'Interaction',
     'FigmaElement',
     'WebElement',
     'MatchResult',
@@ -48,6 +34,12 @@ __all__ = [
     'TreeNode',
     'FigmaVisualizer',
     'ErrorChecker',
+	'FigmaDataLoader',
+	'FigmaDocument',
+	'FigmaFrame',
+	'FigmaElementTree',
+	'FigmaBox',
+	'FigmaBoxPair',
 ]
 
 __version__ = "1.0.0" 
