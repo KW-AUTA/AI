@@ -31,3 +31,12 @@ MappingInfo = Union[RoutingMappingInfo, InteractionMappingInfo, GeneralMappingIn
 
 class MappingResponse(BaseModel):
     mappings: List[MappingInfo]
+
+
+class EvaluationItem(BaseModel):
+    frameSummary: str | None = None
+    highlightImageUrl: str | None = None
+    
+class UITestResponse(BaseModel):
+    usabilityScore: int
+    evaluations: list[EvaluationItem]
