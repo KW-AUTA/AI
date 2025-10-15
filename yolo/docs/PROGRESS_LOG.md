@@ -118,28 +118,40 @@
 
 ---
 
-## 🚧 **다음 단계: 완전 클래스화 (Phase 2)**
+## 🚧 **Phase 2: 완전 클래스화 진행중**
+
+### ✅ **완료된 클래스화 작업:**
+
+#### 1. **Figma 유틸리티 클래스화** (`/yolo/utils/`)
+- ✅ `figma_utility.py`: `FigmaUtilityManager` 클래스 생성 완료
+  - Figma JSON 로드, Base64 이미지 디코딩
+  - YOLO 어노테이션 수집
+  - IOU 계산 기능
+  - 의존성 주입 패턴 적용
+  - 설정 클래스 `FigmaUtilityConfig` 추가
+- ✅ `utils.py`: 레거시 함수들을 래퍼로 변환 (하위 호환성 유지)
+- ✅ `__init__.py`: 새로운 클래스 export 완료
+- ✅ 테스트 완료: Import, 인스턴스 생성, IOU 계산 검증
 
 ### 📋 **아직 클래스화되지 않은 영역들:**
 
-#### 1. **유틸리티 함수들** (`/yolo/utils/`)
-- `utils.py`: 독립 함수들 → UtilityManager 클래스
+#### 2. **기타 유틸리티 함수들** (`/yolo/utils/`)
 - `tree_loader.py`: 함수형 → TreeManager 클래스
 - `errorChecker.py`: 부분 클래스 → 완전 클래스화
 
-#### 2. **Figma 처리** (`/yolo/figma/`)
+#### 3. **Figma 처리** (`/yolo/figma/`)
 - `figma.py`: 일부 독립 함수들 → FigmaProcessor 클래스
 - `figma_visualizer.py`: 개선 필요
 
-#### 3. **시각화 모듈** (`/yolo/visualization/`)
+#### 4. **시각화 모듈** (`/yolo/visualization/`)
 - `visualizer.py`: 정적 메소드 → 인스턴스 기반 클래스
 - `tree_visualizer.py`: 함수형 → TreeVisualizer 클래스
 - `visualize_interaction.py`: 개선 필요
 
-#### 4. **웹 네비게이션** (`/yolo/web/`)
+#### 5. **웹 네비게이션** (`/yolo/web/`)
 - `web_navigator.py`: 이미 클래스지만 개선 필요
 
-#### 5. **매핑 함수들** (`/yolo/core/mapping.py`)
+#### 6. **매핑 함수들** (`/yolo/core/mapping.py`)
 - 대량의 독립 함수들 → MappingProcessor 클래스
 - Ray 기반 처리 → DistributedProcessor 클래스
 
@@ -201,9 +213,15 @@ python -c "from yolo import create_pipeline; print('✅ New classes working!')"
 
 ### **남은 작업량**
 - **전체 파일 수**: ~20개
-- **클래스화 완료**: ~8개 (40%)
-- **남은 파일**: ~12개 (60%)
+- **클래스화 완료**: ~9개 (45%)
+- **남은 파일**: ~11개 (55%)
 - **예상 소요 시간**: 2-3 세션
+
+### **최근 완료 (2025-10-15)**
+- ✅ FigmaUtilityManager 클래스 생성 및 테스트 완료
+- ✅ 레거시 호환성 유지 (utils.py 래퍼 함수)
+- ✅ 설정 클래스 FigmaUtilityConfig 추가
+- ✅ 의존성 주입 패턴 적용
 
 ---
 

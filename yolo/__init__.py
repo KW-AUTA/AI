@@ -22,40 +22,45 @@ from .utils.tree_loader import TreeNode
 from .visualization.visualize_interaction import FigmaVisualizer
 from .utils.errorChecker import ErrorChecker
 from .figma.figma import FigmaDataLoader, FigmaDocument, FigmaFrame, FigmaElementTree, FigmaBox, FigmaBoxPair
+from .utils.figma_utility import FigmaUtilityManager, FigmaUtilityConfig
 from .utils.error_list import *
 __all__ = [
     # Enum 클래스들
-        
+
     # 데이터 클래스들
     'UrlInteraction',
     'FigmaElement',
     'WebElement',
     'MatchResult',
-    
+
     # 새로운 클래스들 (권장)
     'ElementExtractor',
-    'SimilarityMatcher', 
+    'SimilarityMatcher',
     'UIMatchingPipeline',
-    
+    'FigmaUtilityManager',
+
+    # 설정 클래스들
+    'FigmaUtilityConfig',
+
     # 팩토리 함수들
     'create_extractor',
     'create_similarity_matcher',
     'create_pipeline',
     'quick_match',
-    
+
     # 레거시 클래스들 (하위 호환성)
     'LegacyElementExtractor',
-    
+
     # 기타 유틸리티 클래스들
     'TreeNode',
     'FigmaVisualizer',
     'ErrorChecker',
-	'FigmaDataLoader',
-	'FigmaDocument',
-	'FigmaFrame',
-	'FigmaElementTree',
-	'FigmaBox',
-	'FigmaBoxPair',
+    'FigmaDataLoader',
+    'FigmaDocument',
+    'FigmaFrame',
+    'FigmaElementTree',
+    'FigmaBox',
+    'FigmaBoxPair',
 ]
 
 __version__ = "1.0.0" 
