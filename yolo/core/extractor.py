@@ -22,7 +22,7 @@ import torchvision.transforms as T
 from ultralytics import YOLO
 import tesserocr
 
-from .models import ExtractedElement, SimilarityConfig
+from .models import ExtractedElement
 
 
 @dataclass(frozen=True)

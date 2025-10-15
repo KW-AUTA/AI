@@ -2,7 +2,7 @@ import os
 import logging
 from PIL import Image
 from .element_matcher import ElementExtractor as LegacyElementExtractor
-from .extractor import create_pipeline, UIMatchingPipeline, PipelineConfig
+from .pipeline import create_pipeline, UIMatchingPipeline, PipelineConfig
 from .models import ExtractedElement, FigmaFare, FigmaElement, MatchResult
 from ..visualization.visualizer import Visualizer
 from ..web.web_navigator import WebNavigator
@@ -97,7 +97,7 @@ def get_mapping_info(matches: List[MatchResult]) -> List[BaseMappingInfo]:
 	logging.info(f"Generated {len(mapping_infos)} mapping infos.")
 	return mapping_infos
 
-def extract_texts(img: Image.Image, matcher: ElementExtractor, boxes: List[Tuple[int, int, int, int]]) -> List[str]:
+def extract_texts(img: Image.Image, matcher: LegacyElementExtractor, boxes: List[Tuple[int, int, int, int]]) -> List[str]:
 	"""기존 순차 처리 방식으로 텍스트 추출"""
 	texts = []
 	for box in boxes:
@@ -176,7 +176,7 @@ def get_start_x(tree: TreeNode) -> int:
 	get_start_x_recursive(tree)
 	return min_x
 
-def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matcher: ElementExtractor, iou_threshold: float = 0.5, 
+def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matcher: LegacyElementExtractor, iou_threshold: float = 0.5, 
 					speed_mode: str = "balanced") -> List[ExtractedElement]:
 	"""이미지에서 요소 추출 (최적화된 슬라이딩 윈도우 버전)
 	
@@ -485,7 +485,7 @@ def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, 
 	web_navigator.driver.switch_to.window(web_navigator.driver.window_handles[0])
 	return return_matches
 
-def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, web_img: Image.Image, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
+def match_interaction(matcher: LegacyElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, web_img: Image.Image, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
 	return_matches = []
 	for match in matches:
 		interaction = get_interaction_by_id(match.figma.id, interactions)
@@ -496,7 +496,7 @@ def match_interaction(matcher: ElementExtractor, matches: List[MatchResult], web
 			return_matches.extend(check_interaction_overlay(match, web_navigator, figma_raw, web_img, interaction))
 
 	return return_matches
-def process_matches(matcher: ElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
+def process_matches(matcher: LegacyElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
 	"""매칭 결과 처리"""
 	logging.info("Processing matches...")
 	return_matches = []
@@ -587,7 +587,7 @@ def match_all_extracted(
 			best_iou = 0.0
 			
 			for extracted in available_extracted:
-				iou = ElementExtractor.calculate_iou(node_rect, extracted.box)
+				iou = LegacyElementExtractor.calculate_iou(node_rect, extracted.box)
 				if iou > best_iou:
 					best_iou = iou
 					best_extracted = extracted
@@ -775,7 +775,7 @@ def extract_elements_worker(args):
 		start_time = time.time()
 		
 		# 각 워커마다 새로운 matcher 인스턴스 생성
-		local_matcher = ElementExtractor(resize_size=(736, 736))
+		local_matcher = LegacyElementExtractor(resize_size=(736, 736))
 		extracted_elements = extract_elements(image, 0, target_height, local_matcher)
 		
 		end_time = time.time()
@@ -796,7 +796,7 @@ def dummy_worker(x):
 	return x * 2
 
 @ray.remote
-class ElementExtractorActor:
+class LegacyElementExtractorActor:
 	"""Ray Actor for element extraction with YOLO model"""
 	
 	def __init__(self):
@@ -809,7 +809,7 @@ class ElementExtractorActor:
 			os.environ['CUDA_VISIBLE_DEVICES'] = ''
 			
 			logging.info("🔧 Initializing YOLO model in Ray actor (CPU mode)...")
-			self.matcher = ElementExtractor(resize_size=(736, 736))
+			self.matcher = LegacyElementExtractor(resize_size=(736, 736))
 			
 			# YOLO 모델을 CPU 모드로 강제 설정
 			self.matcher.yolo.model.to('cpu')
@@ -1047,7 +1047,7 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 	try:
 		# 1. 이미지 처리
 		logging.info("Step 1: Image Processing")
-		matcher = ElementExtractor(resize_size=(736, 736))
+		matcher = LegacyElementExtractor(resize_size=(736, 736))
 		figma_raw, figma_interactions = load_figma_data(json_url)
 
 		root_frame = get_frame_by_name_from_raw(figma_raw, current_page)
@@ -1205,8 +1205,8 @@ def extract_elements_ray(figma_image: Image.Image, web_image: Image.Image, targe
 	start_time = time.time()
 	
 	# Ray actors 생성 (2개의 워커)
-	figma_actor = ElementExtractorActor.remote()
-	web_actor = ElementExtractorActor.remote()
+	figma_actor = LegacyElementExtractorActor.remote()
+	web_actor = LegacyElementExtractorActor.remote()
 	
 	try:
 		# Figma와 Web 요소 추출을 동시에 실행

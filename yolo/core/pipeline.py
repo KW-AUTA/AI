@@ -19,10 +19,7 @@ from PIL import Image
 
 from .extractor import ElementExtractor, ExtractorConfig, create_extractor
 from .matcher import SimilarityMatcher, create_similarity_matcher
-from .models import (
-    ExtractedElement, FigmaFare, MatchResult, 
-    SimilarityConfig, ExtractorConfig as ModelExtractorConfig
-)
+from .models import ExtractedElement, FigmaFare, MatchResult, SimilarityConfig
 from ..figma.figma import FigmaDataLoader
 from ..web.web_navigator import WebNavigator
 from ..visualization.visualizer import Visualizer
