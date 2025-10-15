@@ -18,10 +18,10 @@ from .core.element_matcher import ElementExtractor as LegacyElementExtractor
 from .core.extractor import ElementExtractor, create_extractor
 from .core.matcher import SimilarityMatcher, create_similarity_matcher
 from .core.pipeline import UIMatchingPipeline, create_pipeline, quick_match
-from .utils.tree_loader import TreeNode
+from .utils.tree_loader import TreeManager, TreeNode
 from .visualization.visualizer import Visualizer, VisualizerConfig, create_visualizer
 from .visualization.visualize_interaction import FigmaVisualizer
-from .utils.errorChecker import ErrorChecker
+from .utils.errorChecker import ErrorChecker, ErrorManager, ErrorCheckConfig
 from .figma.figma import FigmaDataLoader, FigmaDocument, FigmaFrame, FigmaElementTree, FigmaBox, FigmaBoxPair
 from .utils.figma_utility import FigmaUtilityManager, FigmaUtilityConfig
 from .core.mapping_processor import (
@@ -76,9 +76,12 @@ __all__ = [
     'LegacyElementExtractor',
 
     # 기타 유틸리티 클래스들
+    'TreeManager',
     'TreeNode',
     'FigmaVisualizer',
     'ErrorChecker',
+    'ErrorManager',
+    'ErrorCheckConfig',
     'FigmaDataLoader',
     'FigmaDocument',
     'FigmaFrame',

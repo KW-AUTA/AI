@@ -3,7 +3,7 @@ import logging
 from PIL import Image
 from .element_matcher import ElementExtractor as LegacyElementExtractor
 from .pipeline import create_pipeline, UIMatchingPipeline, PipelineConfig
-from .models import ExtractedElement, FigmaFare, FigmaElement, MatchResult
+from .models import ExtractedElement, FigmaFare, MatchResult
 from ..visualization.visualizer import Visualizer
 from ..web.web_navigator import WebNavigator
 from ..utils.utils import load_figma_json, decode_base64_image, get_min_x
@@ -17,7 +17,7 @@ from routes.dto.response import RoutingMappingInfo, InteractionMappingInfo, Gene
 from typing import List, Dict, Tuple, Optional, Set
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import multiprocessing
-from ..utils.tree_loader import TreeNode
+from ..utils.tree_loader import TreeManager, TreeNode
 from contextlib import contextmanager
 import concurrent.futures
 import cProfile
@@ -165,16 +165,8 @@ def extract_text_worker(args):
 
 
 def get_start_x(tree: TreeNode) -> int:
-	min_x = 0
-
-	def get_start_x_recursive(node: TreeNode):
-		nonlocal min_x
-		if node.data.absolute_render_position['x'] < min_x:
-			min_x = node.data.absolute_render_position['x']
-		for child in node.children:
-			get_start_x_recursive(child)
-	get_start_x_recursive(tree)
-	return min_x
+	manager = TreeManager.from_tree_node(tree)
+	return int(manager.get_min_render_x())
 
 def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matcher: LegacyElementExtractor, iou_threshold: float = 0.5, 
 					speed_mode: str = "balanced") -> List[ExtractedElement]:
@@ -519,19 +511,13 @@ def load_figma_json(json_url: str) -> Dict:
 	return figma_json
 
 def convert_raw_to_tree(figma_tree: Dict, root_image: Image.Image, level: int = 0) -> TreeNode:
-	logging.debug(f"Converting raw data to tree at level {level}")
-	converted_tree = TreeNode(FigmaElement(
-		id=figma_tree['data']['id'],
-		name=figma_tree['data']['name'],
-		absolute_position=figma_tree['data']['absolutePosition'],
-		relative_position=figma_tree['data']['relativePosition'],
-		absolute_render_position=figma_tree['data']['absoluteRenderPosition'],
-		relative_render_position=figma_tree['data']['relativeRenderPosition'],
-	))
-	for child in figma_tree['children']:
-		converted_tree.add_child(convert_raw_to_tree(child, root_image, level + 1))
+	"""
+	Deprecated: TreeManager.from_figma_tree()를 사용하십시오.
 
-	return converted_tree
+	현재 구현은 TreeManager를 통해 트리를 구성합니다.
+	"""
+	manager = TreeManager.from_figma_tree(figma_tree)
+	return manager.root
 	
 def get_frame_by_name(figma_tree: Dict, name: str) -> Optional[TreeNode]:
 	if figma_tree['data']['name'] == name:

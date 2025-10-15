@@ -97,7 +97,7 @@ class WebFare:
     box: Tuple[float, float, float, float]
     extracted: ExtractedElement
 
-@dataclass(kw_only=True, frozen=True, slots=True)
+@dataclass(kw_only=True, frozen=False, slots=True)
 class MatchResult:
     figma: FigmaFare | None 
     web:   ExtractedElement | None

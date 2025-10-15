@@ -347,10 +347,8 @@ class UIMatchingPipeline:
         # 에러 체크
         if self.error_checker and self.config.enable_error_checking:
             for match in self._current_result.matches:
-                errors = self.error_checker.check_match(match)
-                if errors:
-                    match.errorCategories = (match.errorCategories or []) + errors
-        
+                match.errorCategories = self.error_checker.check_match(match)
+
         # 통계 정보 추가
         self._current_result.debug_info.update({
             'total_processing_time': self._current_result.total_time,
