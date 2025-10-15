@@ -1,4 +1,4 @@
-from yolo.mapping import mapping
+from yolo.core.mapping import mapping
 
 
 async def execute_component_mapping_test(current_url: str, current_page: str, figma_url: str):
