@@ -196,6 +196,17 @@
 
 ---
 
+## ✅ **현재 테스트/검증 계획**
+- [x] `FigmaProcessor` 단위 테스트 (이미지 로딩 실패 케이스 포함)
+- [x] `TreeManager` 좌표 계산 회귀 테스트
+- [ ] `UIMatchingPipeline` 통합 테스트 갱신 (새 매니저 적용 플로우)
+- [ ] ErrorManager 허용 오차 파라미터 튜닝 및 환경변수 노출 여부 검토
+- [ ] 시각화 모듈 smoke 테스트 스크립트 정비 (디버그 이미지는 `core/debug_sim/`로 이동 예정)
+
+> 2025-10-15 `python -m unittest discover -s yolo/tests` 실행 완료 (신규 단위 테스트 6건 성공)
+
+---
+
 ## 🔄 **세션 재개 시 실행할 명령어들**
 
 ### 1. **환경 설정**

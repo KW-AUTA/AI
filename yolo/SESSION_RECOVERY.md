@@ -109,4 +109,23 @@ python -c "from yolo import create_pipeline; print('✅ Ready to continue!')"
 8. 🚧 웹 네비게이션 개선
 9. 테스트 시나리오 확장
 
+## 🔍 **테스트 & 검증 TODO**
+- [x] `FigmaProcessor` 단위 테스트 추가 (JSON 로드, 이미지 디코딩 케이스)
+- [ ] `UIMatchingPipeline` 통합 흐름에 새로운 매니저들 적용한 회귀 테스트
+- [x] `TreeManager` 최소/최대 좌표 계산 검증
+- [ ] ErrorManager 경계값(허용 오차) 튜닝 및 환경 변수화 여부 검토
+
+## 🔜 **다음 세션 체크리스트 (웹 네비게이터 개선 전)**
+- [ ] `web/web_navigator.py` 구조 파악 및 의존성 정리
+- [ ] 브라우저 세션/리소스 정리 로직 설계 (컨텍스트 매니저 고려)
+- [ ] 문서화 업데이트: 네비게이터 개선 계획 및 예상 리스크
+- [ ] 신규 단위 테스트 실행 자동화 스크립트 작성 (pytest/unittest)
+
+## ✅ **최근 테스트 실행**
+- 2025-10-15 `python -m unittest discover -s yolo/tests` (신규 FigmaProcessor/TreeManager 테스트) → 성공
+
+## 🗂️ **참조 문서**
+- `/yolo/docs/PROGRESS_LOG.md` – 세부 진행 내역 및 우선순위
+- `/yolo/docs/REFACTORING_SUMMARY.md` – 전체 리팩토링 로드맵
+
 **상세 내용은 `/yolo/docs/PROGRESS_LOG.md` 참조**
