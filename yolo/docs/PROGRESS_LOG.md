@@ -156,21 +156,24 @@
 - ✅ `core/pipeline.py`: 에러 후처리 흐름을 새로운 매니저에 맞게 조정
 - ✅ `core/models.py`: `MatchResult` 가변 구조로 조정 (에러 카테고리 업데이트 지원)
 
+#### 4. **Figma 처리 모듈 클래스화** (`/yolo/figma/`, `/yolo/core/`)
+- ✅ `figma.py`: `FigmaProcessor`, `FigmaProcessorConfig` 도입 (데이터 로딩 파이프라인 통합)
+- ✅ `FigmaFrame`, `FigmaDocument`: 프레임 팩토리/이미지 로더 의존성 주입 지원
+- ✅ `core/pipeline.py`: 파이프라인이 FigmaProcessor를 통해 데이터 로드
+- ✅ `__init__.py`: 새 Processor export 추가
+- ✅ 레거시 진입점 (`decode_base64_image`, `FigmaDataLoader`) 유지로 하위 호환성 보장
+
 ### 📋 **아직 클래스화되지 않은 영역들:**
 
-#### 2. **Figma 처리** (`/yolo/figma/`)
-- `figma.py`: 일부 독립 함수들 → FigmaProcessor 클래스
-- `figma_visualizer.py`: 개선 필요
-
-#### 3. **시각화 모듈** (`/yolo/visualization/`)
+#### 2. **시각화 모듈** (`/yolo/visualization/`)
 - `visualizer.py`: 정적 메소드 → 인스턴스 기반 클래스
 - `tree_visualizer.py`: 함수형 → TreeVisualizer 클래스
 - `visualize_interaction.py`: 개선 필요
 
-#### 4. **웹 네비게이션** (`/yolo/web/`)
+#### 3. **웹 네비게이션** (`/yolo/web/`)
 - `web_navigator.py`: 이미 클래스지만 개선 필요
 
-#### 5. **매핑 함수들** (`/yolo/core/mapping.py`)
+#### 4. **매핑 함수들** (`/yolo/core/mapping.py`)
 - ✅ ~~대량의 독립 함수들 → MappingProcessor 클래스~~ (완료)
 - ✅ ~~Ray 기반 처리 → DistributedProcessor 클래스~~ (완료)
 
@@ -179,20 +182,17 @@
 ## 🎯 **다음 작업 우선순위**
 
 ### **High Priority (즉시 작업)**
-1. **Figma 처리 완전 클래스화**
-   - `figma.py` 구조 개선 및 Processor 도입
-   - 데이터 로더/비주얼라이저 통합 정리
-
-2. **시각화 모듈 후속 개선**
+1. **시각화 모듈 후속 개선**
    - 트리/인터랙션 시각화 고도화
    - Visualizer 테스트 및 문서화
 
-### **Medium Priority**
-3. **웹 네비게이션 개선**
-4. **테스트 코드 추가**
+2. **웹 네비게이션 개선**
+   - Navigator 안정성 개선
+   - 브라우저 세션 관리 강화
 
-### **Low Priority**
-5. **API 문서 자동 생성**
+### **Medium Priority**
+3. **테스트 코드 추가**
+4. **API 문서 자동 생성**
 
 ---
 
@@ -212,8 +212,8 @@ python -c "from yolo import create_pipeline; print('✅ New classes working!')"
 ```
 
 ### 3. **다음 작업 시작 포인트**
-- 파일: `/yolo/figma/figma.py` 중심으로 클래스화
-- 목표: `FigmaProcessor` 설계 및 적용
+- 파일: `/yolo/web/web_navigator.py` 점검
+- 목표: 네비게이션 로직 개선 및 클래스 구조 정리
 
 ---
 
@@ -222,7 +222,7 @@ python -c "from yolo import create_pipeline; print('✅ New classes working!')"
 ### **Before vs After**
 | 측면 | Before | After | 개선율 |
 |------|--------|-------|--------|
-| **클래스화 비율** | 30% | 80% | 50% ⬆️ |
+| **클래스화 비율** | 30% | 85% | 55% ⬆️ |
 | **매직 넘버** | 다수 | 0개 | 100% ⬇️ |
 | **의존성 주입** | 없음 | 완전 지원 | ∞ |
 | **설정 관리** | 하드코딩 | 클래스 기반 | 100% ⬆️ |
@@ -230,8 +230,8 @@ python -c "from yolo import create_pipeline; print('✅ New classes working!')"
 
 ### **남은 작업량**
 - **전체 파일 수**: ~20개
-- **클래스화 완료**: ~16개 (80%)
-- **남은 파일**: ~4개 (20%)
+- **클래스화 완료**: ~17개 (85%)
+- **남은 파일**: ~3개 (15%)
 - **예상 소요 시간**: 1 세션
 
 ### **최근 완료 (2025-10-15)**
@@ -239,6 +239,7 @@ python -c "from yolo import create_pipeline; print('✅ New classes working!')"
 - ✅ MappingProcessor 및 헬퍼 클래스들 생성 완료
 - ✅ DistributedProcessor (Ray 기반) 생성 완료
 - ✅ TreeManager / ErrorManager 도입 및 파이프라인 정비
+- ✅ FigmaProcessor 도입 및 파이프라인 연동
 - ✅ 레거시 호환성 유지
 - ✅ 의존성 주입 및 팩토리 패턴 적용
 - ✅ 모든 설정 클래스 dataclass 기반 구현

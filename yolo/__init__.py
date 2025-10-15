@@ -22,7 +22,16 @@ from .utils.tree_loader import TreeManager, TreeNode
 from .visualization.visualizer import Visualizer, VisualizerConfig, create_visualizer
 from .visualization.visualize_interaction import FigmaVisualizer
 from .utils.errorChecker import ErrorChecker, ErrorManager, ErrorCheckConfig
-from .figma.figma import FigmaDataLoader, FigmaDocument, FigmaFrame, FigmaElementTree, FigmaBox, FigmaBoxPair
+from .figma.figma import (
+    FigmaDataLoader,
+    FigmaDocument,
+    FigmaFrame,
+    FigmaElementTree,
+    FigmaBox,
+    FigmaBoxPair,
+    FigmaProcessor,
+    FigmaProcessorConfig,
+)
 from .utils.figma_utility import FigmaUtilityManager, FigmaUtilityConfig
 from .core.mapping_processor import (
     MappingProcessor,
@@ -88,6 +97,8 @@ __all__ = [
     'FigmaElementTree',
     'FigmaBox',
     'FigmaBoxPair',
+    'FigmaProcessor',
+    'FigmaProcessorConfig',
 ]
 
 __version__ = "1.0.0" 

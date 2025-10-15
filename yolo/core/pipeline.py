@@ -20,7 +20,7 @@ from PIL import Image
 from .extractor import ElementExtractor, ExtractorConfig, create_extractor
 from .matcher import SimilarityMatcher, create_similarity_matcher
 from .models import ExtractedElement, FigmaFare, MatchResult, SimilarityConfig
-from ..figma.figma import FigmaDataLoader
+from ..figma.figma import FigmaProcessor, FigmaProcessorConfig
 from ..web.web_navigator import WebNavigator
 from ..visualization.visualizer import Visualizer
 from ..utils.errorChecker import ErrorChecker
@@ -141,7 +141,8 @@ class UIMatchingPipeline:
         extractor: Optional[ElementExtractor] = None,
         matcher: Optional[SimilarityMatcher] = None,
         visualizer: Optional[Visualizer] = None,
-        error_checker: Optional[ErrorChecker] = None
+        error_checker: Optional[ErrorChecker] = None,
+        figma_processor: Optional[FigmaProcessor] = None
     ):
         self.config = config or PipelineConfig.from_env()
         
@@ -150,6 +151,7 @@ class UIMatchingPipeline:
         self.matcher = matcher or create_similarity_matcher(self.config.similarity_config)
         self.visualizer = visualizer or Visualizer() if self.config.enable_visualization else None
         self.error_checker = error_checker or ErrorChecker() if self.config.enable_error_checking else None
+        self.figma_processor = figma_processor or FigmaProcessor(FigmaProcessorConfig())
         
         # 로깅 설정
         self.logger = logging.getLogger(__name__)
@@ -243,8 +245,8 @@ class UIMatchingPipeline:
                 web_image = navigator.capture_screenshot()
             
             # Figma 데이터 로드
-            figma_loader = FigmaDataLoader(figma_url)
-            figma_data = figma_loader.load_data()
+            figma_document = self.figma_processor.load_document(figma_url)
+            figma_data = figma_document.raw_data
             
             # 파이프라인 실행
             result = self.process_figma_and_web(figma_data, web_image)
@@ -273,12 +275,10 @@ class UIMatchingPipeline:
     def _extract_figma_elements(self, figma_data_or_path: Union[str, dict, Path]) -> List[FigmaFare]:
         """Figma 요소 추출"""
         # Figma 데이터 로딩
-        if isinstance(figma_data_or_path, (str, Path)):
-            loader = FigmaDataLoader(str(figma_data_or_path))
-            figma_data = loader.load_data()
-        else:
-            figma_data = figma_data_or_path
-        
+        document = self.figma_processor.load_document(figma_data_or_path)
+
+        figma_data = document.raw_data
+
         # TODO: Figma 데이터에서 FigmaFare 객체 생성 로직 구현
         # 현재는 빈 리스트 반환
         figma_elements = []

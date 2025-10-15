@@ -4,7 +4,7 @@
 - **브랜치**: `ml`
 - **마지막 커밋**: `ddc7c41` (시각화 모듈 클래스화 완료)
 - **작업 환경**: conda ai-backend
-- **진행률**: Phase 2 - 80% (16/20 파일 완료)
+- **진행률**: Phase 2 - 85% (17/20 파일 완료)
 
 ## ⚡ **빠른 세션 재개**
 
@@ -21,8 +21,8 @@ conda activate ai-backend
 python -c "from yolo import create_pipeline; print('✅ Ready to continue!')"
 ```
 
-- **파일**: `/yolo/figma/` 모듈
-- **목표**: Figma 처리 모듈 클래스화 및 개선
+- **파일**: `/yolo/web/` 모듈
+- **목표**: 웹 네비게이션 개선 및 클래스 구조 정리
 - **참조**: `/yolo/docs/PROGRESS_LOG.md`
 
 ## 📋 **작업 진행률**
@@ -91,6 +91,13 @@ python -c "from yolo import create_pipeline; print('✅ Ready to continue!')"
   - ✅ `pipeline.py`: 에러 처리 플로우 업데이트 (불변 데이터 클래스 호환)
   - ✅ `core/models.py`: `MatchResult` 가변 구조로 조정 (기록 필드 업데이트 허용)
 
+### 6. **Figma 처리 모듈 클래스화 완료**
+- ✅ `figma.py`: `FigmaProcessor`, `FigmaProcessorConfig` 도입 (데이터 로딩 파이프라인 일원화)
+- ✅ `FigmaFrame`, `FigmaDocument`: 의존성 주입 기반으로 재구성 (이미지 로더/프레임 팩토리 지원)
+- ✅ `pipeline.py`: FigmaProcessor 연동 (데이터 로드 경로 통합)
+- ✅ `__init__.py`: 새 Processor export 추가
+- ✅ 하위 호환성 유지 (`decode_base64_image`, `FigmaDataLoader` 등 레거시 API 유지)
+
 ## 🎯 **즉시 할 일**
 1. ✅ ~~utils.py 클래스화~~ (완료)
 2. ✅ ~~mapping.py 함수들 클래스화~~ (완료)
@@ -98,7 +105,8 @@ python -c "from yolo import create_pipeline; print('✅ Ready to continue!')"
 4. ✅ ~~시각화 모듈 개선~~ (완료)
 5. ✅ ~~Tree loader 클래스화~~ (완료)
 6. ✅ ~~Error checker 완전 클래스화~~ (완료)
-7. 🚧 Figma 처리 모듈 개선
-8. 웹 네비게이션 개선
+7. ✅ ~~Figma 처리 모듈 개선~~ (완료)
+8. 🚧 웹 네비게이션 개선
+9. 테스트 시나리오 확장
 
 **상세 내용은 `/yolo/docs/PROGRESS_LOG.md` 참조**
