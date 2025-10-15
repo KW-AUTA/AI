@@ -19,6 +19,7 @@ from .core.extractor import ElementExtractor, create_extractor
 from .core.matcher import SimilarityMatcher, create_similarity_matcher
 from .core.pipeline import UIMatchingPipeline, create_pipeline, quick_match
 from .utils.tree_loader import TreeNode
+from .visualization.visualizer import Visualizer, VisualizerConfig, create_visualizer
 from .visualization.visualize_interaction import FigmaVisualizer
 from .utils.errorChecker import ErrorChecker
 from .figma.figma import FigmaDataLoader, FigmaDocument, FigmaFrame, FigmaElementTree, FigmaBox, FigmaBoxPair
@@ -49,11 +50,13 @@ __all__ = [
     'FigmaUtilityManager',
     'MappingProcessor',
     'DistributedProcessor',
+    'Visualizer',
 
     # 설정 클래스들
     'FigmaUtilityConfig',
     'MappingConfig',
     'RayConfig',
+    'VisualizerConfig',
 
     # 헬퍼 클래스들
     'TimeManager',
@@ -66,6 +69,7 @@ __all__ = [
     'create_similarity_matcher',
     'create_pipeline',
     'create_distributed_processor',
+    'create_visualizer',
     'quick_match',
 
     # 레거시 클래스들 (하위 호환성)

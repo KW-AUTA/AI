@@ -1,13 +1,10 @@
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from PIL import Image
-import base64
-import io
-import requests
-import sys
 from typing import List, Dict, Optional
 from ..utils.tree_loader import TreeNode
 from ..core.models import FigmaElement
+from .image_utils import decode_image_from_reference
 
 class TreeNodeVisualizer:
     """
@@ -25,35 +22,11 @@ class TreeNodeVisualizer:
     def _get_image(img_ref):
         """
         base64 문자열이나 URL에서 이미지를 PIL Image로 변환
+
+        Note: 이 메서드는 하위 호환성을 위해 유지됩니다.
+              새로운 코드에서는 image_utils.decode_image_from_reference() 사용을 권장합니다.
         """
-        if not img_ref or not isinstance(img_ref, str):
-            return None
-
-        if img_ref.startswith("http"):  # URL인 경우
-            try:
-                response = requests.get(img_ref, stream=True)
-                response.raise_for_status()
-                return Image.open(io.BytesIO(response.content))
-            except requests.exceptions.RequestException as e:
-                print(f"Warning: Could not download image from URL {img_ref}. Error: {e}", file=sys.stderr)
-                return None
-
-        if img_ref.startswith("data:image"):
-            img_str = img_ref.split(",", 1)[1]
-        else:
-            img_str = img_ref
-
-        img_str = img_str.replace('\n', '').replace('\r', '').replace(' ', '')
-        missing_padding = len(img_str) % 4
-        if missing_padding:
-            img_str += '=' * (4 - missing_padding)
-
-        try:
-            img_bytes = base64.b64decode(img_str)
-            return Image.open(io.BytesIO(img_bytes))
-        except Exception as e:
-            print(f"Warning: Could not decode or open image from base64 string. Error: {e}", file=sys.stderr)
-            return None
+        return decode_image_from_reference(img_ref)
     
     def _extract_boxes_from_node(self, node: TreeNode) -> List[Dict]:
         """

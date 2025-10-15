@@ -1,11 +1,9 @@
 import json
 import argparse
-import base64
-import io
 import sys
-import requests
 from PIL import Image
 import matplotlib.pyplot as plt
+from .image_utils import decode_image_from_reference
 
 class FigmaVisualizer:
 	"""
@@ -24,35 +22,11 @@ class FigmaVisualizer:
 	def _get_image(img_ref):
 		"""
 		Decodes a base64 string or downloads an image from a URL into a PIL Image.
+
+		Note: This method is kept for backward compatibility.
+		      For new code, consider using image_utils.decode_image_from_reference() directly.
 		"""
-		if not img_ref or not isinstance(img_ref, str):
-			return None
-
-		if img_ref.startswith("http"): # It's a URL
-			try:
-				response = requests.get(img_ref, stream=True)
-				response.raise_for_status() # Raise an exception for bad status codes
-				return Image.open(io.BytesIO(response.content))
-			except requests.exceptions.RequestException as e:
-				print(f"Warning: Could not download image from URL {img_ref}. Error: {e}", file=sys.stderr)
-				return None
-
-		if img_ref.startswith("data:image"):
-			img_str = img_ref.split(",", 1)[1]
-		else:
-			img_str = img_ref
-
-		img_str = img_str.replace('\n', '').replace('\r', '').replace(' ', '')
-		missing_padding = len(img_str) % 4
-		if missing_padding:
-			img_str += '=' * (4 - missing_padding)
-
-		try:
-			img_bytes = base64.b64decode(img_str)
-			return Image.open(io.BytesIO(img_bytes))
-		except Exception as e:
-			print(f"Warning: Could not decode or open image from base64 string. Error: {e}", file=sys.stderr)
-			return None
+		return decode_image_from_reference(img_ref)
 
 	def _find_node_by_id(self, node_id, nodes=None):
 		"""
