@@ -133,6 +133,22 @@
 - ✅ `__init__.py`: 새로운 클래스 export 완료
 - ✅ 테스트 완료: Import, 인스턴스 생성, IOU 계산 검증
 
+#### 2. **Mapping 함수들 클래스화** (`/yolo/core/`)
+- ✅ `mapping_processor.py`: 핵심 매핑 로직 클래스화 완료
+  - `MappingProcessor`: 메인 매핑 처리 클래스
+  - `TimeManager`: 시간 측정 및 프로파일링
+  - `SeedManager`: 랜덤 시드 통합 관리
+  - `MatchCategorizer`: 매칭 결과 카테고리 분류
+  - `ElementExtractorHelper`: 요소 추출 헬퍼
+  - `MappingConfig`: 설정 관리 클래스
+- ✅ `distributed_processor.py`: Ray 분산 처리 클래스화 완료
+  - `DistributedProcessor`: Ray 기반 분산 병렬 처리
+  - `ElementExtractorActor`: Ray 액터 (워커)
+  - `RayConfig`: Ray 설정 관리
+- ✅ 의존성 주입 패턴 적용
+- ✅ 팩토리 메서드 패턴 적용
+- ✅ 테스트 완료: 모든 클래스 import 및 인스턴스 생성 검증
+
 ### 📋 **아직 클래스화되지 않은 영역들:**
 
 #### 2. **기타 유틸리티 함수들** (`/yolo/utils/`)
@@ -152,8 +168,8 @@
 - `web_navigator.py`: 이미 클래스지만 개선 필요
 
 #### 6. **매핑 함수들** (`/yolo/core/mapping.py`)
-- 대량의 독립 함수들 → MappingProcessor 클래스
-- Ray 기반 처리 → DistributedProcessor 클래스
+- ✅ ~~대량의 독립 함수들 → MappingProcessor 클래스~~ (완료)
+- ✅ ~~Ray 기반 처리 → DistributedProcessor 클래스~~ (완료)
 
 ---
 
@@ -213,15 +229,17 @@ python -c "from yolo import create_pipeline; print('✅ New classes working!')"
 
 ### **남은 작업량**
 - **전체 파일 수**: ~20개
-- **클래스화 완료**: ~9개 (45%)
-- **남은 파일**: ~11개 (55%)
-- **예상 소요 시간**: 2-3 세션
+- **클래스화 완료**: ~11개 (55%)
+- **남은 파일**: ~9개 (45%)
+- **예상 소요 시간**: 1-2 세션
 
 ### **최근 완료 (2025-10-15)**
 - ✅ FigmaUtilityManager 클래스 생성 및 테스트 완료
-- ✅ 레거시 호환성 유지 (utils.py 래퍼 함수)
-- ✅ 설정 클래스 FigmaUtilityConfig 추가
-- ✅ 의존성 주입 패턴 적용
+- ✅ MappingProcessor 및 헬퍼 클래스들 생성 완료
+- ✅ DistributedProcessor (Ray 기반) 생성 완료
+- ✅ 레거시 호환성 유지
+- ✅ 의존성 주입 및 팩토리 패턴 적용
+- ✅ 모든 설정 클래스 dataclass 기반 구현
 
 ---
 

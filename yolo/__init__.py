@@ -23,6 +23,15 @@ from .visualization.visualize_interaction import FigmaVisualizer
 from .utils.errorChecker import ErrorChecker
 from .figma.figma import FigmaDataLoader, FigmaDocument, FigmaFrame, FigmaElementTree, FigmaBox, FigmaBoxPair
 from .utils.figma_utility import FigmaUtilityManager, FigmaUtilityConfig
+from .core.mapping_processor import (
+    MappingProcessor,
+    MappingConfig,
+    TimeManager,
+    SeedManager,
+    MatchCategorizer,
+    ElementExtractorHelper
+)
+from .core.distributed_processor import DistributedProcessor, RayConfig, create_distributed_processor
 from .utils.error_list import *
 __all__ = [
     # Enum 클래스들
@@ -38,14 +47,25 @@ __all__ = [
     'SimilarityMatcher',
     'UIMatchingPipeline',
     'FigmaUtilityManager',
+    'MappingProcessor',
+    'DistributedProcessor',
 
     # 설정 클래스들
     'FigmaUtilityConfig',
+    'MappingConfig',
+    'RayConfig',
+
+    # 헬퍼 클래스들
+    'TimeManager',
+    'SeedManager',
+    'MatchCategorizer',
+    'ElementExtractorHelper',
 
     # 팩토리 함수들
     'create_extractor',
     'create_similarity_matcher',
     'create_pipeline',
+    'create_distributed_processor',
     'quick_match',
 
     # 레거시 클래스들 (하위 호환성)
