@@ -1,7 +1,8 @@
 import os
 import logging
 from PIL import Image
-from .element_matcher import ElementExtractor
+from .element_matcher import ElementExtractor as LegacyElementExtractor
+from .extractor import create_pipeline, UIMatchingPipeline, PipelineConfig
 from .models import ExtractedElement, FigmaFare, FigmaElement, MatchResult
 from ..visualization.visualizer import Visualizer
 from ..web.web_navigator import WebNavigator
@@ -972,9 +973,59 @@ def _save_match_crops(figma_img: Image.Image, web_img: Image.Image, matches: Lis
 
     return out_root
 
-def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False):
-	"""메인 실행 함수"""
-	logging.info(f"Starting mapping process for base_url: {base_url} and json_url: {json_url}")
+# 새로운 파이프라인 기반 매핑 함수
+def mapping_v2(base_url: str, current_page: str, json_url: str, **kwargs):
+	"""
+	새로운 클래스 기반 파이프라인을 사용한 매핑 함수
+	- 의존성 주입 패턴 적용
+	- 설정 기반 파라미터 조정
+	- 개선된 에러 처리
+	"""
+	logging.info(f"Starting new pipeline mapping for base_url: {base_url} and json_url: {json_url}")
+	
+	try:
+		# 파이프라인 설정
+		config = PipelineConfig.from_env()
+		
+		# 사용자 정의 설정 적용
+		if 'min_similarity' in kwargs:
+			config = PipelineConfig(
+				**{**config.__dict__, 'min_similarity_threshold': kwargs['min_similarity']}
+			)
+		
+		# 파이프라인 생성 및 실행
+		with create_pipeline(config) as pipeline:
+			return pipeline.process_from_mapping_data(base_url, current_page, json_url)
+			
+	except Exception as e:
+		logging.error(f"New pipeline mapping failed: {e}")
+		# fallback to legacy mapping
+		logging.info("Falling back to legacy mapping...")
+		return mapping_legacy(base_url, current_page, json_url, **kwargs)
+
+
+def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False, use_new_pipeline: bool = None):
+	"""
+	메인 실행 함수 - 새로운 파이프라인과 기존 코드 호환성 제공
+	
+	Args:
+		use_new_pipeline: True면 새 파이프라인, False면 기존 코드, None이면 환경변수로 결정
+	"""
+	# 파이프라인 선택
+	if use_new_pipeline is None:
+		use_new_pipeline = str(os.environ.get('USE_NEW_PIPELINE', '0')).lower() in ('1', 'true', 'yes')
+	
+	if use_new_pipeline:
+		logging.info("Using new class-based pipeline")
+		return mapping_v2(base_url, current_page, json_url, test_performance=test_performance)
+	else:
+		logging.info("Using legacy mapping implementation")
+		return mapping_legacy(base_url, current_page, json_url, test_performance=test_performance)
+
+
+def mapping_legacy(base_url: str, current_page: str, json_url: str, test_performance: bool = False):
+	"""기존 레거시 매핑 함수 (원본 코드)"""
+	logging.info(f"Starting legacy mapping process for base_url: {base_url} and json_url: {json_url}")
 	target_height = 720
 	seed_everything(42)
 	web_navigator = WebNavigator(headless=True, base_url=base_url)

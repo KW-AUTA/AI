@@ -14,7 +14,10 @@ from .core.models import (
     MatchResult
 )
 
-from .core.element_matcher import ElementExtractor
+from .core.element_matcher import ElementExtractor as LegacyElementExtractor
+from .core.extractor import ElementExtractor, create_extractor
+from .core.matcher import SimilarityMatcher, create_similarity_matcher
+from .core.pipeline import UIMatchingPipeline, create_pipeline, quick_match
 from .utils.tree_loader import TreeNode
 from .visualization.visualize_interaction import FigmaVisualizer
 from .utils.errorChecker import ErrorChecker
@@ -29,8 +32,21 @@ __all__ = [
     'WebElement',
     'MatchResult',
     
-    # 메인 클래스들
+    # 새로운 클래스들 (권장)
     'ElementExtractor',
+    'SimilarityMatcher', 
+    'UIMatchingPipeline',
+    
+    # 팩토리 함수들
+    'create_extractor',
+    'create_similarity_matcher',
+    'create_pipeline',
+    'quick_match',
+    
+    # 레거시 클래스들 (하위 호환성)
+    'LegacyElementExtractor',
+    
+    # 기타 유틸리티 클래스들
     'TreeNode',
     'FigmaVisualizer',
     'ErrorChecker',
