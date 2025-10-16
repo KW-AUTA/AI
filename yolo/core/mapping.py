@@ -967,26 +967,36 @@ def mapping_v2(base_url: str, current_page: str, json_url: str, **kwargs):
 	- 설정 기반 파라미터 조정
 	- 개선된 에러 처리
 	"""
-	logging.info(f"Starting new pipeline mapping for base_url: {base_url} and json_url: {json_url}")
-	
+	logging.info(f"✨ Starting new pipeline mapping for base_url: {base_url} and json_url: {json_url}")
+
 	try:
-		# 파이프라인 설정
-		config = PipelineConfig.from_env()
-		
-		# 사용자 정의 설정 적용
-		if 'min_similarity' in kwargs:
-			config = PipelineConfig(
-				**{**config.__dict__, 'min_similarity_threshold': kwargs['min_similarity']}
-			)
-		
-		# 파이프라인 생성 및 실행
-		with create_pipeline(config) as pipeline:
-			return pipeline.process_from_mapping_data(base_url, current_page, json_url)
-			
+		from ..core.mapping_processor import MappingProcessor
+
+		# 파이프라인 생성
+		pipeline = create_pipeline()
+
+		# 매칭 실행
+		logging.info("🚀 Executing pipeline.match()...")
+		matches = pipeline.match(
+			figma_url=json_url,
+			web_url=base_url,
+			page_name=current_page
+		)
+
+		# 매핑 정보 생성
+		logging.info("📋 Generating mapping info...")
+		processor = MappingProcessor()
+		mapping_infos = processor.get_mapping_info(matches)
+
+		logging.info(f"✅ New pipeline completed: {len(mapping_infos)} mapping infos generated")
+		return mapping_infos
+
 	except Exception as e:
-		logging.error(f"New pipeline mapping failed: {e}")
+		logging.error(f"❌ New pipeline mapping failed: {e}")
+		import traceback
+		traceback.print_exc()
 		# fallback to legacy mapping
-		logging.info("Falling back to legacy mapping...")
+		logging.info("⚠️  Falling back to legacy mapping...")
 		return mapping_legacy(base_url, current_page, json_url, **kwargs)
 
 
