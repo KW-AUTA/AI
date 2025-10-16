@@ -373,48 +373,16 @@ class SimilarityMatcher:
         
         both_have_text = np.outer(figma_has_text, web_has_text)
         
-        # 기본 텍스트 가중치
-        w_text_base = np.where(
-            both_have_text, 
-            self.weights.TEXT_WITH_BOTH, 
-            self.weights.TEXT_WITHOUT
-        ).astype(np.float32)
-        
-        # 텍스트 유사도에 따른 스케일링
-        text_scale_factor = (
-            self.weights.TEXT_SCALE_MIN + 
-            (self.weights.TEXT_SCALE_MAX - self.weights.TEXT_SCALE_MIN) * 
-            np.clip(text_similarity, 0.0, 1.0)
-        )
-        w_text_scaled = (w_text_base * text_scale_factor).astype(np.float32)
-        
-        # 기본 가중치들
-        w_feat_base = np.full((N, M), self.weights.FEATURE_BASE, dtype=np.float32)
+        # 간단한 고정 가중치 사용 (동적 스케일링 제거)
+        # 이렇게 하면 가중치 합이 항상 1.0으로 유지됩니다
+        w_text = np.full((N, M), self.weights.TEXT_WITH_BOTH, dtype=np.float32)
+        w_feature = np.full((N, M), self.weights.FEATURE_BASE, dtype=np.float32)
         w_size = np.full((N, M), self.weights.SIZE_BASE, dtype=np.float32)
         w_coord = np.full((N, M), self.weights.COORDINATE_BASE, dtype=np.float32)
-        
-        # 피처 가중치 스케일링 (텍스트 요소일 때)
-        pair_has_text = np.logical_or.outer(figma_has_text, web_has_text)
-        pair_both_text = both_have_text
-        
-        feat_scale = np.where(
-            pair_both_text, 
-            self.weights.FEAT_SCALE_BOTH_TEXT,
-            np.where(pair_has_text, self.weights.FEAT_SCALE_XOR_TEXT, 1.0)
-        ).astype(np.float32)
-        
-        # 텍스트 유사도에 따른 추가 스케일링
-        feat_text_scale = (
-            self.weights.FEAT_SCALE_MIN + 
-            (1.0 - self.weights.FEAT_SCALE_MIN) * 
-            np.clip(text_similarity, 0.0, 1.0)
-        )
-        feat_scale *= feat_text_scale
-        w_feat_scaled = (w_feat_base * feat_scale).astype(np.float32)
-        
+
         return {
-            'text': w_text_scaled,
-            'feature': w_feat_scaled,
+            'text': w_text,
+            'feature': w_feature,
             'size': w_size,
             'coordinate': w_coord
         }
@@ -427,25 +395,32 @@ class SimilarityMatcher:
         coord_sim: np.ndarray,
         weights: Dict[str, np.ndarray]
     ) -> np.ndarray:
-        """가중 평균으로 유사도 결합"""
+        """가중 평균으로 유사도 결합
+
+        가중치는 이미 합이 1.0이 되도록 설정되어 있으므로
+        (TEXT=0.3, FEATURE=0.4, SIZE=0.15, COORD=0.15)
+        가중치 합으로 나누지 않고 직접 가중합을 사용합니다.
+        이렇게 하면 개별 유사도가 높을 때 최종 점수도 높게 유지됩니다.
+        """
         if text_sim.size == 0:
             return text_sim
-        
+
         w_text = weights['text']
         w_feature = weights['feature']
         w_size = weights['size']
         w_coord = weights['coordinate']
-        
-        # 가중치 합으로 정규화
-        w_sum = w_text + w_feature + w_size + w_coord
-        
+
+        # 동적 가중치로 인해 합이 1.0이 아닐 수 있으므로 정규화
+        w_sum = w_text + w_feature + w_size + w_coord + 1e-8
+
+        # 정규화된 가중치로 가중합 계산
         combined = (
-            text_sim * w_text + 
-            feature_sim * w_feature + 
-            size_sim * w_size + 
-            coord_sim * w_coord
-        ) / (w_sum + 1e-8)
-        
+            text_sim * (w_text / w_sum) +
+            feature_sim * (w_feature / w_sum) +
+            size_sim * (w_size / w_sum) +
+            coord_sim * (w_coord / w_sum)
+        )
+
         return combined.astype(np.float32)
     
     def find_matches(

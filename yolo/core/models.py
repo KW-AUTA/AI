@@ -134,7 +134,7 @@ class SimilarityWeights:
     SOFTMAX_TAU_DEFAULT: float = 0.25  # Softmax temperature 기본값
     
     # 임계값
-    MIN_SIMILARITY: float = 0.7      # 최소 유사도 임계값
+    MIN_SIMILARITY: float = 0.55     # 최소 유사도 임계값 (0.7 → 0.55로 조정)
 
 
 @dataclass(frozen=True) 
@@ -169,7 +169,7 @@ class SimilarityConfig:
                 COORDINATE_BASE=get_float_env('SIM_COORDINATE_BASE', 0.15),
                 FEAT_SCALE_BOTH_TEXT=get_float_env('SIM_FEAT_TEXT_BOTH', 0.6),
                 FEAT_SCALE_XOR_TEXT=get_float_env('SIM_FEAT_TEXT_XOR', 0.8),
-                MIN_SIMILARITY=get_float_env('SIM_MIN_SIMILARITY', 0.7)
+                MIN_SIMILARITY=get_float_env('SIM_MIN_SIMILARITY', 0.55)
             ),
             use_softmax_relative=get_bool_env('SIM_REL_SOFTMAX', False),
             softmax_tau=get_float_env('SIM_REL_TAU', 0.25),
