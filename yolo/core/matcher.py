@@ -349,9 +349,15 @@ class SimilarityMatcher:
         web_elements: List[ExtractedElement],
         text_similarity: np.ndarray
     ) -> Dict[str, np.ndarray]:
-        """동적 가중치 계산"""
+        """텍스트 기반 동적 가중치 계산
+
+        핵심 전략:
+        1. 둘 다 텍스트가 있고 유사도가 낮으면 -> 텍스트 가중치 대폭 증가 (페널티 효과)
+        2. 둘 다 텍스트가 있고 유사도가 높으면 -> 텍스트 가중치 증가
+        3. 텍스트가 없으면 -> 텍스트 가중치 최소화, 다른 특징에 의존
+        """
         N, M = len(figma_elements), len(web_elements)
-        
+
         if N == 0 or M == 0:
             return {
                 'text': np.array([]),
@@ -359,26 +365,49 @@ class SimilarityMatcher:
                 'size': np.array([]),
                 'coordinate': np.array([])
             }
-        
+
         # 텍스트 존재 여부 확인
         figma_has_text = np.array([
-            bool(getattr(f.extracted, 'text', '') or '') 
+            bool(getattr(f.extracted, 'text', '') or '')
             for f in figma_elements
         ], dtype=bool)
-        
+
         web_has_text = np.array([
-            bool(getattr(w, 'text', '') or '') 
+            bool(getattr(w, 'text', '') or '')
             for w in web_elements
         ], dtype=bool)
-        
+
         both_have_text = np.outer(figma_has_text, web_has_text)
-        
-        # 간단한 고정 가중치 사용 (동적 스케일링 제거)
-        # 이렇게 하면 가중치 합이 항상 1.0으로 유지됩니다
-        w_text = np.full((N, M), self.weights.TEXT_WITH_BOTH, dtype=np.float32)
+
+        # 기본 가중치 초기화
+        w_text = np.full((N, M), self.weights.TEXT_WITHOUT, dtype=np.float32)
         w_feature = np.full((N, M), self.weights.FEATURE_BASE, dtype=np.float32)
         w_size = np.full((N, M), self.weights.SIZE_BASE, dtype=np.float32)
         w_coord = np.full((N, M), self.weights.COORDINATE_BASE, dtype=np.float32)
+
+        # 둘 다 텍스트가 있는 경우: 텍스트 유사도에 따라 가중치 조정
+        if both_have_text.any():
+            # 텍스트 유사도가 낮으면 텍스트 가중치를 매우 높게 (페널티)
+            # 텍스트 유사도가 높으면 적당히 높게
+            # 0.0~0.3: 매우 높은 가중치 (0.7) -> 낮은 점수로 페널티
+            # 0.3~0.7: 높은 가중치 (0.5)
+            # 0.7~1.0: 적당한 가중치 (0.4)
+            text_weight_both = np.where(
+                text_similarity < 0.3,
+                0.7,  # 텍스트가 매우 다르면 텍스트 가중치 70%
+                np.where(
+                    text_similarity < 0.7,
+                    0.5,  # 텍스트가 다르면 가중치 50%
+                    0.4   # 텍스트가 유사하면 가중치 40%
+                )
+            )
+
+            w_text[both_have_text] = text_weight_both[both_have_text]
+
+            # 텍스트 가중치가 증가한 만큼 다른 가중치 감소
+            w_feature[both_have_text] = (1.0 - text_weight_both[both_have_text]) * 0.5
+            w_size[both_have_text] = (1.0 - text_weight_both[both_have_text]) * 0.25
+            w_coord[both_have_text] = (1.0 - text_weight_both[both_have_text]) * 0.25
 
         return {
             'text': w_text,
@@ -430,43 +459,45 @@ class SimilarityMatcher:
         min_similarity: Optional[float] = None
     ) -> Tuple[List[MatchResult], List[MatchResult], List[MatchResult]]:
         """매칭 수행"""
-        
+
         min_similarity = min_similarity or self.weights.MIN_SIMILARITY
-        
+
         # 유사도 계산
         sim_result = self.calculate_similarities(figma_elements, web_elements)
-        
+
         # 디버그 시각화
         if self.config.debug_mode:
             self._save_debug_visualizations(sim_result)
-        
-        # 헝가리안 알고리즘으로 최적 매칭
+
+        # 헝가리안 알고리즘으로 최적 매칭 (개별 유사도도 전달)
         matches = self._hungarian_matching(
             sim_result.combined_relative,
             sim_result.combined_absolute,
+            sim_result,  # 개별 유사도도 전달
             figma_elements,
             web_elements,
             min_similarity
         )
-        
+
         return matches
     
     def _hungarian_matching(
         self,
         relative_similarity: np.ndarray,
         absolute_similarity: np.ndarray,
+        sim_result: SimilarityResult,
         figma_elements: List[FigmaFare],
         web_elements: List[ExtractedElement],
         min_similarity: float
     ) -> Tuple[List[MatchResult], List[MatchResult], List[MatchResult]]:
         """헝가리안 알고리즘으로 최적 매칭"""
-        
+
         N, M = len(figma_elements), len(web_elements)
-        
+
         if N == 0 or M == 0:
             unmatched_figma = [
                 MatchResult(
-                    figma=figma, web=None, 
+                    figma=figma, web=None,
                     feature_similarity=0.0, text_similarity=0.0,
                     size_similarity=0.0, coordinate_similarity=0.0,
                     score=0.0, errorCategories=[G_ERROR_NOT_MATCHED]
@@ -481,30 +512,31 @@ class SimilarityMatcher:
                 ) for web in web_elements
             ]
             return [], unmatched_figma, unmatched_web
-        
+
         # 비용 행렬 (1 - 유사도)
         cost_matrix = 1.0 - relative_similarity
-        
+
         # 헝가리안 알고리즘 실행
         figma_indices, web_indices = linear_sum_assignment(cost_matrix)
-        
+
         matches = []
         matched_figma = set()
         matched_web = set()
-        
+
         # 매칭 결과 처리
         for figma_idx, web_idx in zip(figma_indices, web_indices):
             absolute_score = absolute_similarity[figma_idx, web_idx]
-            
+
             # 임계값 확인
             if absolute_score >= min_similarity:
+                # 개별 유사도 저장
                 match = MatchResult(
                     figma=figma_elements[figma_idx],
                     web=web_elements[web_idx],
-                    feature_similarity=0.0,  # TODO: 개별 유사도 저장
-                    text_similarity=0.0,
-                    size_similarity=0.0,
-                    coordinate_similarity=0.0,
+                    feature_similarity=float(sim_result.feature_matrix[figma_idx, web_idx]),
+                    text_similarity=float(sim_result.text_matrix[figma_idx, web_idx]),
+                    size_similarity=float(sim_result.size_matrix[figma_idx, web_idx]),
+                    coordinate_similarity=float(sim_result.coordinate_matrix[figma_idx, web_idx]),
                     score=float(absolute_score),
                     errorCategories=[]
                 )
