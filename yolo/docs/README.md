@@ -67,11 +67,12 @@ yolo/
 
 ### 기본 사용 예시
 ```python
-from yolo import ElementExtractor, WebNavigator
+from yolo import ElementExtractor, WebNavigator, WebNavigatorConfig
 from yolo.figma import FigmaDataLoader
 
-# 웹 네비게이터 초기화
-navigator = WebNavigator(headless=False)
+# 웹 네비게이터 초기화 (config 기반)
+config = WebNavigatorConfig(headless=False)
+navigator = WebNavigator(config=config)
 navigator.navigate("https://example.com")
 
 # 요소 추출기 초기화

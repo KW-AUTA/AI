@@ -1024,7 +1024,11 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 	logging.info(f"Starting legacy mapping process for base_url: {base_url} and json_url: {json_url}")
 	target_height = 720
 	seed_everything(42)
-	web_navigator = WebNavigator(headless=True, base_url=base_url)
+
+	# WebNavigatorConfig를 사용하여 설정 전달
+	from ..web.web_navigator import WebNavigatorConfig
+	nav_config = WebNavigatorConfig(headless=True, base_url=base_url)
+	web_navigator = WebNavigator(config=nav_config)
 	visualizer = Visualizer()
 
 	# Ray 초기화
