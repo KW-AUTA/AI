@@ -1002,7 +1002,7 @@ def mapping(base_url: str, current_page: str, json_url: str, test_performance: b
 	"""
 	# 파이프라인 선택
 	if use_new_pipeline is None:
-		use_new_pipeline = str(os.environ.get('USE_NEW_PIPELINE', '1')).lower() in ('1', 'true', 'yes')
+		use_new_pipeline = str(os.environ.get('USE_NEW_PIPELINE', '0')).lower() in ('1', 'true', 'yes')
 	
 	if use_new_pipeline:
 		logging.info("Using new class-based pipeline")
@@ -1041,6 +1041,11 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		# 1. 이미지 처리
 		logging.info("Step 1: Image Processing")
 		matcher = LegacyElementExtractor(resize_size=(736, 736))
+
+		# 유사도 매칭을 위한 SimilarityMatcher 생성 (개선된 유사도 계산 사용)
+		from .matcher import create_similarity_matcher
+		similarity_matcher = create_similarity_matcher()
+
 		figma_raw, figma_interactions = load_figma_data(json_url)
 
 		root_frame = get_frame_by_name_from_raw(figma_raw, current_page)
@@ -1085,10 +1090,10 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		logging.info(f"Found {len(fare_figma_interaction)} elements with interactions and {len(fare_figma_no_interaction)} without.")
 
 
-		logging.info("Step 4a: Matching elements WITH interactions")
-		sim_dict_interaction = matcher.calculate_similarity(root_image, web_img, fare_figma_interaction, web_extracted)
+		logging.info("Step 4a: Matching elements WITH interactions (using SimilarityMatcher)")
+		# 개선된 SimilarityMatcher 사용
 		matches_interaction, unmatched_figma_interaction, unmatched_web_interaction = \
-			matcher.get_matches(sim_dict_interaction, fare_figma_interaction, web_extracted, 0.65)
+			similarity_matcher.find_matches(fare_figma_interaction, web_extracted)
 		logging.info(f"Found {len(matches_interaction)} matches for interaction elements.")
 
 
@@ -1099,14 +1104,16 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		web_extracted_remaining = [web_el for web_el in web_extracted if id(web_el) not in matched_web_elements_ids]
 		
 		logging.info(f"{len(web_extracted_remaining)} web elements remaining for second match.")
-		logging.info("Step 4b: Matching elements WITHOUT interactions")
+		logging.info("Step 4b: Matching elements WITHOUT interactions (using SimilarityMatcher)")
 		if fare_figma_no_interaction and web_extracted_remaining:
-			sim_dict_no_interaction = matcher.calculate_similarity(root_image, web_img, fare_figma_no_interaction, web_extracted_remaining)
+			# 개선된 SimilarityMatcher 사용
 			matches_no_interaction, unmatched_figma_no_interaction, unmatched_web_no_interaction = \
-				matcher.get_matches(sim_dict_no_interaction, fare_figma_no_interaction, web_extracted_remaining, 0.65)
+				similarity_matcher.find_matches(fare_figma_no_interaction, web_extracted_remaining)
 			logging.info(f"Found {len(matches_no_interaction)} matches for non-interaction elements.")
 		else:
 			matches_no_interaction = []
+			unmatched_figma_no_interaction = fare_figma_no_interaction
+			unmatched_web_no_interaction = web_extracted_remaining
 			logging.info("No non-interaction elements or remaining web elements to match.")
 
 		# 교집합 남기도록 필터링
