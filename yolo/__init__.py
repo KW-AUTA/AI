@@ -42,6 +42,7 @@ from .core.mapping_processor import (
     ElementExtractorHelper
 )
 from .core.distributed_processor import DistributedProcessor, RayConfig, create_distributed_processor
+from .web.web_navigator import WebNavigator, WebNavigatorConfig, create_web_navigator
 from .utils.error_list import *
 __all__ = [
     # Enum 클래스들
@@ -60,12 +61,14 @@ __all__ = [
     'MappingProcessor',
     'DistributedProcessor',
     'Visualizer',
+    'WebNavigator',
 
     # 설정 클래스들
     'FigmaUtilityConfig',
     'MappingConfig',
     'RayConfig',
     'VisualizerConfig',
+    'WebNavigatorConfig',
 
     # 헬퍼 클래스들
     'TimeManager',
@@ -79,6 +82,7 @@ __all__ = [
     'create_pipeline',
     'create_distributed_processor',
     'create_visualizer',
+    'create_web_navigator',
     'quick_match',
 
     # 레거시 클래스들 (하위 호환성)
