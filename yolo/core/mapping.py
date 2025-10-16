@@ -970,23 +970,16 @@ def mapping_v2(base_url: str, current_page: str, json_url: str, **kwargs):
 	logging.info(f"✨ Starting new pipeline mapping for base_url: {base_url} and json_url: {json_url}")
 
 	try:
-		from ..core.mapping_processor import MappingProcessor
-
 		# 파이프라인 생성
 		pipeline = create_pipeline()
 
-		# 매칭 실행
-		logging.info("🚀 Executing pipeline.match()...")
-		matches = pipeline.match(
-			figma_url=json_url,
-			web_url=base_url,
-			page_name=current_page
+		# 매칭 실행 (올바른 메서드 사용)
+		logging.info("🚀 Executing pipeline.process_from_mapping_data()...")
+		mapping_infos = pipeline.process_from_mapping_data(
+			current_url=base_url,
+			current_page=current_page,
+			figma_url=json_url
 		)
-
-		# 매핑 정보 생성
-		logging.info("📋 Generating mapping info...")
-		processor = MappingProcessor()
-		mapping_infos = processor.get_mapping_info(matches)
 
 		logging.info(f"✅ New pipeline completed: {len(mapping_infos)} mapping infos generated")
 		return mapping_infos
