@@ -429,15 +429,25 @@ class ElementExtractor:
 		img_input = img_np[..., ::-1].astype(np.float32) / 255.0
 		img_input = torch.from_numpy(img_input).permute(2, 0, 1).unsqueeze(0)
 
-		# Feature map 추출을 위한 hook
-		feat_map = None
-		feature_map_storage = []
+			# Multi-scale feature map 추출을 위한 hook
+		feat_maps = []  # 여러 레이어의 특징 맵 저장
+		handles = []  # hook 핸들 저장
+
 		if extract_features:
 			backbone_modules = list(self.yolo.model.model.children())
-			hook_layer = backbone_modules[10]  # C2PSA layer
-			handle = hook_layer.register_forward_hook(
-				lambda m, inp, out: feature_map_storage.append(out.detach())
-			)
+
+			# 여러 스테이지에서 특징 추출
+			# Layer 6: 초기 특징 (에지, 텍스처) - 아이콘/Vector 구분에 유용
+			# Layer 8: 중간 특징 (패턴, 형태)
+			# Layer 10: 고수준 특징 (의미론적) - 텍스트 요소에 유용
+			target_layers = [6, 8, 10]
+
+			for layer_idx in target_layers:
+				hook_layer = backbone_modules[layer_idx]
+				handle = hook_layer.register_forward_hook(
+					lambda m, inp, out, idx=layer_idx: feat_maps.append((idx, out.detach()))
+				)
+				handles.append(handle)
 
 		# Inference
 		results = self.yolo.predict(
@@ -448,10 +458,15 @@ class ElementExtractor:
 			verbose=False
 		)[0]
 
-		# Hook 제거 및 feature map 추출
+			# Hook 제거 및 multi-scale feature maps 정리
 		if extract_features:
-			handle.remove()
-			feat_map = feature_map_storage[0]
+			for handle in handles:
+				handle.remove()
+
+			# 레이어 인덱스순으로 정렬
+			feat_maps.sort(key=lambda x: x[0])
+			# feat_map은 (layer_idx, tensor) 튜플의 리스트
+			feat_map = feat_maps  # [(6, tensor), (8, tensor), (10, tensor)]
 
 		# 박스 좌표 복원
 		boxes = results.boxes.xyxy.cpu().numpy().copy()
@@ -526,18 +541,22 @@ class ElementExtractor:
 
 	def extract_features_from_map(
 		self,
-		full_feat_map: torch.Tensor,
+		feat_maps: list,  # [(layer_idx, tensor), ...] 형식
 		boxes: np.ndarray,
 		original_img_size: Tuple[int, int]
 	) -> torch.Tensor:
-		"""Feature map에서 박스 영역의 특징 추출"""
+		"""Multi-scale feature maps에서 박스 영역의 특징 추출 및 결합"""
 		if len(boxes) == 0:
 			return torch.empty(0)
+
+		# 레거시 호환성: 단일 텐서가 전달된 경우
+		if isinstance(feat_maps, torch.Tensor):
+			feat_maps = [(10, feat_maps)]  # 기존 단일 레이어로 처리
 
 		orig_w, orig_h = original_img_size
 		resized_w, resized_h = self.resize_size
 
-		# 박스 좌표를 feature map 좌표로 변환
+		# 박스 좌표를 리사이즈된 이미지 좌표로 변환
 		scale_x_orig_to_resized = resized_w / orig_w
 		scale_y_orig_to_resized = resized_h / orig_h
 
@@ -545,25 +564,52 @@ class ElementExtractor:
 		boxes_resized_coords[:, [0, 2]] *= scale_x_orig_to_resized
 		boxes_resized_coords[:, [1, 3]] *= scale_y_orig_to_resized
 
-		# Feature map 좌표로 변환
-		feat_map_h, feat_map_w = full_feat_map.shape[2:]
-		scale_x_resized_to_feat = feat_map_w / resized_w
-		scale_y_resized_to_feat = feat_map_h / resized_h
+		# 각 레이어에서 특징 추출
+		multi_scale_features = []
 
-		boxes_feat_map_coords = boxes_resized_coords.copy()
-		boxes_feat_map_coords[:, [0, 2]] *= scale_x_resized_to_feat
-		boxes_feat_map_coords[:, [1, 3]] *= scale_y_resized_to_feat
+		for layer_idx, full_feat_map in feat_maps:
+			# Feature map 좌표로 변환
+			feat_map_h, feat_map_w = full_feat_map.shape[2:]
+			scale_x_resized_to_feat = feat_map_w / resized_w
+			scale_y_resized_to_feat = feat_map_h / resized_h
 
-		# ROI Align을 위한 배치 인덱스 추가
-		batch_indices = torch.zeros((boxes_feat_map_coords.shape[0], 1), dtype=torch.float32)
-		roi_boxes = torch.cat([batch_indices, torch.from_numpy(boxes_feat_map_coords).float()], dim=1)
+			boxes_feat_map_coords = boxes_resized_coords.copy()
+			boxes_feat_map_coords[:, [0, 2]] *= scale_x_resized_to_feat
+			boxes_feat_map_coords[:, [1, 3]] *= scale_y_resized_to_feat
 
-		# ROI Align 수행
-		pooled_features = torchvision.ops.roi_align(full_feat_map, roi_boxes, output_size=(1, 1), spatial_scale=1.0)
+			# ROI Align을 위한 배치 인덱스 추가
+			batch_indices = torch.zeros((boxes_feat_map_coords.shape[0], 1), dtype=torch.float32)
+			roi_boxes = torch.cat([batch_indices, torch.from_numpy(boxes_feat_map_coords).float()], dim=1)
 
-		# Flatten 및 정규화
-		pooled_features = pooled_features.view(pooled_features.size(0), -1)
-		normalized_features = torch.nn.functional.normalize(pooled_features, p=2, dim=1)
+			# ROI Align 수행
+			pooled_features = torchvision.ops.roi_align(
+				full_feat_map, roi_boxes, output_size=(1, 1), spatial_scale=1.0
+			)
+
+			# Flatten
+			pooled_features = pooled_features.view(pooled_features.size(0), -1)
+			multi_scale_features.append(pooled_features)
+
+		# Multi-scale 특징 결합
+		# 옵션 1: Concatenation (모든 스케일을 이어붙임)
+		combined_features = torch.cat(multi_scale_features, dim=1)
+
+		# 옵션 2: 차원 축소 후 정규화 (메모리 효율적)
+		# 각 스케일을 같은 차원으로 projection한 후 평균
+		# target_dim = 512
+		# projected = []
+		# for feat in multi_scale_features:
+		#     if feat.shape[1] != target_dim:
+		#         proj = torch.nn.functional.adaptive_avg_pool1d(
+		#             feat.unsqueeze(1), target_dim
+		#         ).squeeze(1)
+		#         projected.append(proj)
+		#     else:
+		#         projected.append(feat)
+		# combined_features = torch.stack(projected).mean(dim=0)
+
+		# 정규화
+		normalized_features = torch.nn.functional.normalize(combined_features, p=2, dim=1)
 
 		return normalized_features.cpu()
 
