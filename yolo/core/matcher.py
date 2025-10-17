@@ -527,22 +527,50 @@ class SimilarityMatcher:
         for figma_idx, web_idx in zip(figma_indices, web_indices):
             absolute_score = absolute_similarity[figma_idx, web_idx]
 
-            # 임계값 확인
-            if absolute_score >= min_similarity:
-                # 개별 유사도 저장
-                match = MatchResult(
-                    figma=figma_elements[figma_idx],
-                    web=web_elements[web_idx],
-                    feature_similarity=float(sim_result.feature_matrix[figma_idx, web_idx]),
-                    text_similarity=float(sim_result.text_matrix[figma_idx, web_idx]),
-                    size_similarity=float(sim_result.size_matrix[figma_idx, web_idx]),
-                    coordinate_similarity=float(sim_result.coordinate_matrix[figma_idx, web_idx]),
-                    score=float(absolute_score),
-                    errorCategories=[]
-                )
-                matches.append(match)
-                matched_figma.add(figma_idx)
-                matched_web.add(web_idx)
+            # 전체 점수 임계값 확인
+            if absolute_score < min_similarity:
+                continue
+
+            # 개별 유사도 추출
+            feat_sim = float(sim_result.feature_matrix[figma_idx, web_idx])
+            text_sim = float(sim_result.text_matrix[figma_idx, web_idx])
+            size_sim = float(sim_result.size_matrix[figma_idx, web_idx])
+            coord_sim = float(sim_result.coordinate_matrix[figma_idx, web_idx])
+
+            # === 개별 유사도 최소 임계값 (Hard Constraints) ===
+            # 환경변수로 설정 가능, 기본값 지정
+            MIN_SIZE_SIMILARITY = float(os.environ.get('MIN_SIZE_SIM', '0.30'))
+            MIN_TEXT_SIMILARITY_BOTH = float(os.environ.get('MIN_TEXT_SIM_BOTH', '0.50'))
+
+            # 텍스트 존재 여부 확인
+            figma_text = getattr(figma_elements[figma_idx].extracted, 'text', '') or ''
+            web_text = getattr(web_elements[web_idx], 'text', '') or ''
+            both_have_text = bool(figma_text.strip()) and bool(web_text.strip())
+
+            # 1. 크기 유사도 체크 (모든 경우)
+            if size_sim < MIN_SIZE_SIMILARITY:
+                self.logger.debug(f"Rejected: size_sim={size_sim:.3f} < {MIN_SIZE_SIMILARITY}")
+                continue
+
+            # 2. 텍스트 유사도 체크 (둘 다 텍스트가 있는 경우)
+            if both_have_text and text_sim < MIN_TEXT_SIMILARITY_BOTH:
+                self.logger.debug(f"Rejected: text_sim={text_sim:.3f} < {MIN_TEXT_SIMILARITY_BOTH} (both have text)")
+                continue
+
+            # 모든 임계값 통과 -> 매칭 승인
+            match = MatchResult(
+                figma=figma_elements[figma_idx],
+                web=web_elements[web_idx],
+                feature_similarity=feat_sim,
+                text_similarity=text_sim,
+                size_similarity=size_sim,
+                coordinate_similarity=coord_sim,
+                score=float(absolute_score),
+                errorCategories=[]
+            )
+            matches.append(match)
+            matched_figma.add(figma_idx)
+            matched_web.add(web_idx)
         
         # 매칭되지 않은 요소들
         unmatched_figma = [
