@@ -10,6 +10,29 @@ import re
 import unicodedata
 import cv2
 import numpy as np
+
+# CRITICAL: PaddlePaddle을 PyTorch보다 먼저 import해야 함
+# macOS에서 libc++ std::string 충돌 방지
+_USE_PADDLE = os.environ.get('USE_PADDLEOCR', 'false').lower() in ('true', '1', 'yes')
+_PADDLE_IMPORTED = False
+
+if _USE_PADDLE:
+	try:
+		# Paddle을 먼저 import
+		import paddle
+		paddle_version = paddle.__version__
+
+		# PaddleOCR 준비
+		from paddleocr import PaddleOCR as _PaddleOCR
+		import logging
+		logging.getLogger('ppocr').setLevel(logging.ERROR)
+		_PADDLE_IMPORTED = True
+		print(f"✓ PaddlePaddle {paddle_version} pre-loaded (before PyTorch)")
+	except Exception as e:
+		_PADDLE_IMPORTED = False
+		print(f"⚠️ PaddlePaddle pre-load failed: {e}")
+
+# PyTorch는 PaddlePaddle 이후에 import
 import torch
 import torch.nn.functional as F
 import torchvision.ops
@@ -152,20 +175,16 @@ class ElementExtractor:
 		# OCR 엔진 선택
 		self.use_paddleocr = use_paddleocr
 
-		if use_paddleocr:
-			# PaddleOCR 초기화
+		if use_paddleocr and _PADDLE_IMPORTED:
+			# PaddleOCR 초기화 (이미 모듈 레벨에서 Paddle이 먼저 import됨)
 			try:
-				from paddleocr import PaddleOCR
-				import logging
-				logging.getLogger('ppocr').setLevel(logging.ERROR)
-
 				# 환경변수 추가 설정
 				os.environ['FLAGS_use_mkldnn'] = 'False'
 				os.environ['GLOG_v'] = '0'
 
-				self.paddle_ocr = PaddleOCR(lang='en')
+				self.paddle_ocr = _PaddleOCR(lang='en')
 				self.api = None
-				print("✓ PaddleOCR 초기화 성공")
+				print("✓ PaddleOCR 초기화 성공 (Paddle-first import 순서)")
 			except Exception as e:
 				print(f"⚠️ PaddleOCR 초기화 실패, Tesseract로 폴백: {e}")
 				self.use_paddleocr = False

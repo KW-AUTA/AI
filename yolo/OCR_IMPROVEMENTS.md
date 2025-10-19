@@ -147,12 +147,31 @@ SIM_DEBUG=1
   - ✗ PaddlePaddle 플래그 설정 (`FLAGS_use_mkldnn=False`)
   - ✓ **PaddleOCR 단독 스크립트만 작동**
 
-### 실용적 해결책
-1. **개발/테스트**: `test_paddle_standalone.py` 사용 (100% 안정)
-2. **프로덕션**:
-   - Linux 환경에서 PaddleOCR 통합 시도
-   - 또는 EasyOCR로 교체 (PyTorch 기반, 충돌 적음)
-3. **현재**: Tesseract + 개선된 전처리 사용 (일부 케이스 실패)
+### 해결책: 2단계 파이프라인 ✅
+
+**`ocr_pipeline.py`** - YOLO와 PaddleOCR을 별도 프로세스로 분리
+
+```python
+# Step 1: YOLO로 박스 탐지 (subprocess)
+# Step 2: PaddleOCR로 텍스트 추출 (subprocess)
+
+from ocr_pipeline import TwoStageOCRPipeline
+
+pipeline = TwoStageOCRPipeline()
+result = pipeline.process('image.png')
+
+# result['ocr_results']: 각 박스의 텍스트
+```
+
+**장점:**
+- ✓ 메모리 완전 분리로 충돌 없음
+- ✓ PaddleOCR 100% 인식률 유지
+- ✓ 프로덕션 환경에서도 안정적
+
+**실용적 해결책:**
+1. **프로덕션**: `ocr_pipeline.py` 사용 (권장) ⭐
+2. **개발/테스트**: `test_paddle_standalone.py` 사용
+3. **레거시**: Tesseract + 개선된 전처리
 
 ### Tesseract 한계
 - 외곽선 스타일 텍스트 인식 불가
