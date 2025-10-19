@@ -1020,7 +1020,7 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 
 	# WebNavigatorConfig를 사용하여 설정 전달
 	from ..web.web_navigator import WebNavigatorConfig
-	nav_config = WebNavigatorConfig(headless=True, base_url=base_url)
+	nav_config = WebNavigatorConfig(headless=False, base_url=base_url)
 	web_navigator = WebNavigator(config=nav_config)
 	visualizer = Visualizer()
 
