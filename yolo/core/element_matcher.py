@@ -126,21 +126,31 @@ class ElementExtractor:
 		self,
 		yolo_model_path: str = None,
 		resize_size: Tuple[int, int] = (736, 736),
-		debug_similarity: bool = False
+		debug_similarity: bool = False,
+		use_paddleocr: bool = True
 	):
 		"""
 		Args:
 			yolo_model_path: YOLO 모델 경로
 			resize_size: 이미지 리사이즈 크기
 			debug_similarity: 디버그 모드 활성화
+			use_paddleocr: PaddleOCR 사용 여부 (기본값: True, False이면 Tesseract 사용)
 		"""
+		# macOS OpenMP 충돌 방지
+		os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 		# YOLO 모델 초기화
 		current_dir = os.path.dirname(__file__)
 		if yolo_model_path is None:
-			yolo_model_path = os.path.join(current_dir, "..", "models_weights", "best.pt")
+			yolo_model_path = os.path.join(current_dir, "..", "models_weights", "best_one.pt")
 		self.yolo = YOLO(yolo_model_path, task='detect', verbose=False)
 		self.resize_size = resize_size
 		self.debug_similarity = debug_similarity or str(os.environ.get('SIM_DEBUG', '1')).lower() in ('1', 'true', 'yes')
+
+		# OCR 엔진 선택
+		# macOS에서 YOLO와 PaddlePaddle 커널 충돌로 인해 Tesseract 사용
+		# PaddleOCR은 test_paddle_standalone.py로 별도 테스트 가능
+		self.use_paddleocr = False  # macOS 호환성 문제로 비활성화
 
 		# Tesseract OCR 설정 (한글+영어 지원)
 		tessdata_dir = "/usr/local/share/tessdata"
@@ -148,6 +158,7 @@ class ElementExtractor:
 		self.api.SetVariable("user_defined_dpi", "300")
 		self.api.SetVariable("tessedit_char_blacklist", "")
 		self.api.SetVariable("preserve_interword_spaces", "1")
+		self.paddle_ocr = None
 
 		# Image transform
 		self.transform = T.Compose([
@@ -194,7 +205,10 @@ class ElementExtractor:
 		scale: float = None,
 		pad: int = 15
 	) -> Image.Image:
-		"""개선된 ROI 전처리로 OCR 인식률 향상"""
+		"""개선된 ROI 전처리로 OCR 인식률 향상
+
+		어두운 배경 + 밝은 텍스트 자동 감지 및 반전 처리
+		"""
 		arr = np.array(pil_crop)
 		if arr.ndim == 3:
 			gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
@@ -225,15 +239,56 @@ class ElementExtractor:
 		# 노이즈 제거
 		denoised = cv2.bilateralFilter(enhanced, 5, 50, 50)
 
-		# 적응적 임계값 적용
-		binary = cv2.adaptiveThreshold(
-			denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-			cv2.THRESH_BINARY, 11, 2
-		)
+		# 배경 밝기 자동 감지
+		# 이미지 외곽 영역의 평균 밝기로 배경 추정
+		border_width = max(5, min(denoised.shape) // 10)
+		top_border = denoised[:border_width, :]
+		bottom_border = denoised[-border_width:, :]
+		left_border = denoised[:, :border_width]
+		right_border = denoised[:, -border_width:]
+
+		background_brightness = np.mean([
+			np.mean(top_border),
+			np.mean(bottom_border),
+			np.mean(left_border),
+			np.mean(right_border)
+		])
+
+		# 배경이 어두우면 (밝기 < 128) 반전 필요
+		# 어두운 배경 + 밝은 텍스트 → 밝은 배경 + 어두운 텍스트로 변환
+		needs_inversion = background_brightness < 128
+
+		if needs_inversion:
+			# THRESH_BINARY_INV: 어두운 배경을 흰색으로, 밝은 텍스트를 검은색으로
+			binary = cv2.adaptiveThreshold(
+				denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+				cv2.THRESH_BINARY_INV, 11, 2
+			)
+		else:
+			# THRESH_BINARY: 일반적인 경우 (밝은 배경 + 어두운 텍스트)
+			binary = cv2.adaptiveThreshold(
+				denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+				cv2.THRESH_BINARY, 11, 2
+			)
 
 		# 모폴로지 연산으로 텍스트 구조 개선
-		kernel = np.ones((2, 2), np.uint8)
-		binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+		if needs_inversion:
+			# 어두운 배경의 경우: 외곽선 텍스트를 채우는 강력한 처리
+			# 1. 강한 Dilation으로 외곽선 채우기
+			kernel_dilate = np.ones((4, 4), np.uint8)
+			binary = cv2.dilate(binary, kernel_dilate, iterations=2)
+
+			# 2. Closing으로 남은 구멍 메우기
+			kernel_close = np.ones((3, 3), np.uint8)
+			binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close, iterations=2)
+
+			# 3. Erosion으로 너무 두꺼워진 글자 다시 얇게 (약하게)
+			kernel_erode = np.ones((2, 2), np.uint8)
+			binary = cv2.erode(binary, kernel_erode, iterations=1)
+		else:
+			# 일반적인 경우: 기본 Closing만
+			kernel_close = np.ones((2, 2), np.uint8)
+			binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close)
 
 		# 여백 추가
 		binary = cv2.copyMakeBorder(binary, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=255)
@@ -250,11 +305,59 @@ class ElementExtractor:
 		x2p, y2p = min(img.width, x2 + pad), min(img.height, y2 + pad)
 		crop_img = img.crop((x1p, y1p, x2p, y2p))
 
+		if self.use_paddleocr:
+			# PaddleOCR 사용
+			return self._extract_text_paddleocr(crop_img)
+		else:
+			# Tesseract 사용
+			return self._extract_text_tesseract(crop_img, x2p - x1p, y2p - y1p)
+
+	def _extract_text_paddleocr(self, crop_img: Image.Image) -> str:
+		"""PaddleOCR을 사용한 텍스트 추출"""
+		try:
+			# PIL Image를 numpy array로 변환 (RGB)
+			img_array = np.array(crop_img)
+
+			# PaddleOCR 실행 (PaddleOCR 3.3+ API)
+			# result: [OCRResult, ...]
+			result = self.paddle_ocr.predict(img_array)
+
+			if not result or not isinstance(result, list) or len(result) == 0:
+				return ""
+
+			# 첫 번째 결과에서 텍스트와 점수 추출
+			ocr_result = result[0]
+			texts = ocr_result.get('rec_texts', [])
+			scores = ocr_result.get('rec_scores', [])
+
+			if not texts:
+				return ""
+
+			# Confidence가 0.5 이상인 텍스트만 결합
+			filtered_texts = []
+			for i, text in enumerate(texts):
+				score = scores[i] if i < len(scores) else 0.0
+				if score >= 0.5:
+					filtered_texts.append(text)
+
+			# 텍스트 결합
+			raw = " ".join(filtered_texts)
+
+			# 후처리
+			return self._postprocess_text(raw)
+
+		except Exception as e:
+			print(f"Warning: PaddleOCR failed: {e}")
+			import traceback
+			traceback.print_exc()
+			return ""
+
+	def _extract_text_tesseract(self, crop_img: Image.Image, roi_w: int, roi_h: int) -> str:
+		"""Tesseract를 사용한 텍스트 추출 (레거시)"""
 		# 전처리 적용
 		binary_pil = self._preprocess_roi(crop_img, pad=20)
 
 		# PSM 선택
-		roi_w, roi_h = x2p - x1p, y2p - y1p
 		psm = self._pick_psm(roi_w, roi_h)
 		self.api.SetPageSegMode(psm)
 

@@ -107,17 +107,26 @@ class FeatureSimilarityStrategy(SimilarityStrategy):
         return similarity_matrix
     
     def _cosine_similarity(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
-        """코사인 유사도 계산"""
+        """코사인 유사도 계산
+
+        정규화된 벡터 간의 코사인 유사도는 [-1, 1] 범위를 가지며:
+        - 1.0: 완전히 동일한 방향 (매우 유사)
+        - 0.0: 직교 (무관)
+        - -1.0: 정반대 방향 (매우 다름)
+
+        음수 값은 유사하지 않음을 의미하므로 0으로 클리핑합니다.
+        """
         # 정규화
         A_norm = A / (np.linalg.norm(A, axis=1, keepdims=True) + 1e-8)
         B_norm = B / (np.linalg.norm(B, axis=1, keepdims=True) + 1e-8)
-        
+
         # 내적으로 코사인 유사도 계산
         similarity = np.dot(A_norm, B_norm.T)
-        
-        # [-1, 1] -> [0, 1] 범위로 변환
-        similarity = (similarity + 1) / 2
-        
+
+        # 음수 값을 0으로 클리핑 (유사하지 않은 경우)
+        # 이제 유사한 이미지는 0.7~1.0, 다른 이미지는 0.0~0.2 범위를 가짐
+        similarity = np.clip(similarity, 0.0, 1.0)
+
         return similarity.astype(np.float32)
 
 
@@ -549,13 +558,31 @@ class SimilarityMatcher:
 
             # 1. 크기 유사도 체크 (모든 경우)
             if size_sim < MIN_SIZE_SIMILARITY:
-                self.logger.debug(f"Rejected: size_sim={size_sim:.3f} < {MIN_SIZE_SIMILARITY}")
+                self.logger.info(f"✗ Rejected by size: figma={figma_elements[figma_idx].name[:30]} web={getattr(web_elements[web_idx], 'text', 'no-text')[:30]} size_sim={size_sim:.2f}")
                 continue
 
             # 2. 텍스트 유사도 체크 (둘 다 텍스트가 있는 경우)
             if both_have_text and text_sim < MIN_TEXT_SIMILARITY_BOTH:
-                self.logger.debug(f"Rejected: text_sim={text_sim:.3f} < {MIN_TEXT_SIMILARITY_BOTH} (both have text)")
+                self.logger.info(f"✗ Rejected by text: figma='{figma_text[:30]}' web='{web_text[:30]}' text_sim={text_sim:.2f}")
                 continue
+
+            # 3. XOR 케이스: 한쪽만 텍스트가 있는 경우 (OCR 실패 보호)
+            figma_has = bool(figma_text.strip())
+            web_has = bool(web_text.strip())
+            if figma_has ^ web_has:  # XOR: 한쪽만 True
+                longer_text = figma_text if figma_has else web_text
+                MIN_FEAT_SIM_XOR = float(os.environ.get('MIN_FEAT_SIM_XOR', '0.85'))
+
+                # 텍스트가 3글자 이상이고 feature 유사도가 낮으면 거부
+                if len(longer_text.strip()) >= 3 and feat_sim < MIN_FEAT_SIM_XOR:
+                    self.logger.info(f"✗ Rejected by XOR text: one_side_text='{longer_text[:30]}' feat_sim={feat_sim:.2f} (< {MIN_FEAT_SIM_XOR})")
+                    continue
+
+            # 디버그: 매칭 승인 로그
+            if both_have_text:
+                self.logger.info(f"✓ Matched (both_text): figma='{figma_text[:30]}' web='{web_text[:30]}' text_sim={text_sim:.2f} score={absolute_score:.2f}")
+            else:
+                self.logger.debug(f"✓ Matched (no_text): figma={figma_elements[figma_idx].name[:30]} score={absolute_score:.2f}")
 
             # 모든 임계값 통과 -> 매칭 승인
             match = MatchResult(
