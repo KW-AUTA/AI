@@ -1003,7 +1003,7 @@ def mapping(base_url: str, current_page: str, json_url: str, test_performance: b
 	# 파이프라인 선택
 	if use_new_pipeline is None:
 		use_new_pipeline = str(os.environ.get('USE_NEW_PIPELINE', '0')).lower() in ('1', 'true', 'yes')
-	
+
 	if use_new_pipeline:
 		logging.info("Using new class-based pipeline")
 		return mapping_v2(base_url, current_page, json_url, test_performance=test_performance)

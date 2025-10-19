@@ -23,6 +23,7 @@ from ultralytics import YOLO
 import tesserocr
 
 from .models import ExtractedElement
+from .paddle_ocr_helper import PaddleOCRHelper
 
 
 @dataclass(frozen=True)
@@ -31,33 +32,37 @@ class ExtractorConfig:
     yolo_model_path: Optional[str] = None
     resize_size: Tuple[int, int] = (736, 736)
     debug_mode: bool = False
-    
+
+    # OCR 엔진 선택
+    use_paddleocr: bool = False  # True: PaddleOCR (subprocess), False: Tesseract
+
     # OCR 설정
     tesseract_data_dir: str = "/usr/local/share/tessdata"
     ocr_languages: str = "kor+eng"
     ocr_dpi: str = "300"
-    
+
     # 이미지 전처리 설정
     scale_factors: Tuple[float, float, float, float] = (4.0, 3.0, 2.0, 1.5)
     scale_thresholds: Tuple[int, int, int] = (30, 60, 120)
-    
+
     @classmethod
     def from_env(cls) -> 'ExtractorConfig':
         """환경변수에서 설정 로드"""
         def get_bool_env(key: str, default: bool) -> bool:
             return str(os.environ.get(key, str(default))).lower() in ('1', 'true', 'yes')
-            
+
         def get_tuple_env(key: str, default: tuple, dtype=int) -> tuple:
             try:
                 values = os.environ.get(key, "").split(",")
                 return tuple(dtype(v.strip()) for v in values if v.strip())
             except:
                 return default
-        
+
         return cls(
             yolo_model_path=os.environ.get('YOLO_MODEL_PATH'),
             resize_size=get_tuple_env('YOLO_RESIZE_SIZE', (736, 736)),
             debug_mode=get_bool_env('EXTRACTOR_DEBUG', False),
+            use_paddleocr=get_bool_env('USE_PADDLEOCR', False),
             tesseract_data_dir=os.environ.get('TESSDATA_DIR', "/usr/local/share/tessdata"),
             ocr_languages=os.environ.get('OCR_LANGUAGES', "kor+eng"),
             ocr_dpi=os.environ.get('OCR_DPI', "300")
@@ -203,6 +208,76 @@ class TesseractOCR:
         if self._api is not None:
             self._api.End()
             self._api = None
+
+
+class PaddleOCR:
+    """PaddleOCR 구현체 (subprocess 기반)"""
+
+    def __init__(self, config: ExtractorConfig):
+        self.config = config
+        self._helper = None
+        self.logger = logging.getLogger(__name__)
+
+    @property
+    def helper(self) -> PaddleOCRHelper:
+        """지연 로딩으로 PaddleOCR Helper 초기화"""
+        if self._helper is None:
+            try:
+                self._helper = PaddleOCRHelper()
+                self.logger.info("✓ PaddleOCR Helper 초기화 성공 (subprocess 기반)")
+            except Exception as e:
+                self.logger.error(f"PaddleOCR Helper 초기화 실패: {e}")
+                raise
+        return self._helper
+
+    def extract_text(self, image: Image.Image, bbox: np.ndarray, image_path: Optional[str] = None) -> str:
+        """이미지에서 텍스트 추출
+
+        Args:
+            image: PIL Image
+            bbox: 박스 좌표 [x1, y1, x2, y2]
+            image_path: 원본 이미지 파일 경로 (있으면 사용, 없으면 임시 파일 생성)
+
+        Returns:
+            추출된 텍스트
+        """
+        try:
+            if image_path is None:
+                # 임시 파일로 저장
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+                    image.save(f.name)
+                    image_path = f.name
+                    try:
+                        text = self.helper.extract_text_single(image_path, bbox)
+                        return self._clean_text(text)
+                    finally:
+                        os.unlink(image_path)
+            else:
+                text = self.helper.extract_text_single(image_path, bbox)
+                return self._clean_text(text)
+
+        except Exception as e:
+            self.logger.warning(f"PaddleOCR extraction failed: {e}")
+            return ""
+
+    def _clean_text(self, text: str) -> str:
+        """텍스트 정리 (PaddleOCR은 이미 정확하므로 최소한의 정리만)"""
+        if not text:
+            return ""
+
+        # 공백 정규화
+        text = ' '.join(text.split())
+
+        # 허용된 문자만 유지
+        allowed_chars = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz가-힣 ,.-%₩:()[]#/@&+=")
+        cleaned = ''.join(c for c in text if c in allowed_chars or '\uAC00' <= c <= '\uD7A3')
+
+        return cleaned.strip()
+
+    def cleanup(self) -> None:
+        """리소스 정리 (subprocess 기반이므로 특별한 정리 불필요)"""
+        pass
 
 
 class YOLODetector:
@@ -397,9 +472,17 @@ def create_extractor(
     config: Optional[ExtractorConfig] = None,
     use_mock_ocr: bool = False
 ) -> ElementExtractor:
-    """ExtractorConfig를 기반으로 ElementExtractor 생성"""
+    """ExtractorConfig를 기반으로 ElementExtractor 생성
+
+    Args:
+        config: ExtractorConfig 설정 (None이면 환경변수에서 로드)
+        use_mock_ocr: 테스트용 Mock OCR 사용 여부
+
+    Returns:
+        ElementExtractor 인스턴스
+    """
     config = config or ExtractorConfig.from_env()
-    
+
     # Mock OCR for testing
     if use_mock_ocr:
         class MockOCR:
@@ -407,7 +490,13 @@ def create_extractor(
                 return "mock_text"
             def cleanup(self) -> None:
                 pass
-        
+
         return ElementExtractor(config=config, ocr_processor=MockOCR())
-    
-    return ElementExtractor(config=config)
+
+    # PaddleOCR 또는 Tesseract 선택
+    if config.use_paddleocr:
+        ocr_processor = PaddleOCR(config)
+    else:
+        ocr_processor = TesseractOCR(config)
+
+    return ElementExtractor(config=config, ocr_processor=ocr_processor)

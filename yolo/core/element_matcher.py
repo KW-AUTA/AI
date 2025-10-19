@@ -45,6 +45,7 @@ from ultralytics import YOLO
 import tesserocr
 
 from .models import FigmaFare, ExtractedElement, MatchResult
+from .paddle_ocr_helper import PaddleOCRHelper
 from ..utils.errorChecker import ErrorChecker
 from ..utils.error_list import *
 
@@ -157,7 +158,7 @@ class ElementExtractor:
 			yolo_model_path: YOLO 모델 경로
 			resize_size: 이미지 리사이즈 크기
 			debug_similarity: 디버그 모드 활성화
-			use_paddleocr: PaddleOCR 사용 여부 (기본값: True, False이면 Tesseract 사용)
+			use_paddleocr: PaddleOCR 사용 여부 (기본값: False, True이면 subprocess 기반 PaddleOCR 사용)
 		"""
 		# macOS 환경 설정 (PaddlePaddle + YOLO 충돌 방지)
 		os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
@@ -175,25 +176,22 @@ class ElementExtractor:
 		# OCR 엔진 선택
 		self.use_paddleocr = use_paddleocr
 
-		if use_paddleocr and _PADDLE_IMPORTED:
-			# PaddleOCR 초기화 (이미 모듈 레벨에서 Paddle이 먼저 import됨)
+		if use_paddleocr:
+			# PaddleOCR Helper 초기화 (subprocess 기반 - 충돌 없음)
 			try:
-				# 환경변수 추가 설정
-				os.environ['FLAGS_use_mkldnn'] = 'False'
-				os.environ['GLOG_v'] = '0'
-
-				self.paddle_ocr = _PaddleOCR(lang='en')
+				self.paddle_helper = PaddleOCRHelper()
 				self.api = None
-				print("✓ PaddleOCR 초기화 성공 (Paddle-first import 순서)")
+				self.paddle_ocr = None
+				print("✓ PaddleOCR Helper 초기화 성공 (subprocess 기반)")
 			except Exception as e:
-				print(f"⚠️ PaddleOCR 초기화 실패, Tesseract로 폴백: {e}")
+				print(f"⚠️ PaddleOCR Helper 초기화 실패, Tesseract로 폴백: {e}")
 				self.use_paddleocr = False
 				tessdata_dir = "/usr/local/share/tessdata"
 				self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
 				self.api.SetVariable("user_defined_dpi", "300")
 				self.api.SetVariable("tessedit_char_blacklist", "")
 				self.api.SetVariable("preserve_interword_spaces", "1")
-				self.paddle_ocr = None
+				self.paddle_helper = None
 		else:
 			# Tesseract OCR 설정 (한글+영어 지원)
 			tessdata_dir = "/usr/local/share/tessdata"
@@ -201,7 +199,7 @@ class ElementExtractor:
 			self.api.SetVariable("user_defined_dpi", "300")
 			self.api.SetVariable("tessedit_char_blacklist", "")
 			self.api.SetVariable("preserve_interword_spaces", "1")
-			self.paddle_ocr = None
+			self.paddle_helper = None
 
 		# Image transform
 		self.transform = T.Compose([
@@ -211,7 +209,7 @@ class ElementExtractor:
 
 	def __del__(self):
 		"""Tesseract API 정리"""
-		if hasattr(self, 'api'):
+		if hasattr(self, 'api') and self.api is not None:
 			self.api.End()
 
 	# ========================================================================
@@ -338,62 +336,67 @@ class ElementExtractor:
 
 		return Image.fromarray(binary)
 
-	def extract_text(self, img: Image.Image, box: np.ndarray) -> str:
-		"""이미지에서 텍스트 추출"""
-		x1, y1, x2, y2 = map(int, box)
+	def extract_text(self, img: Image.Image, box: np.ndarray, image_path: str = None) -> str:
+		"""이미지에서 텍스트 추출
 
-		# ROI에 패딩 추가
-		pad = 12
-		x1p, y1p = max(0, x1 - pad), max(0, y1 - pad)
-		x2p, y2p = min(img.width, x2 + pad), min(img.height, y2 + pad)
-		crop_img = img.crop((x1p, y1p, x2p, y2p))
+		Args:
+			img: 이미지 (PIL Image)
+			box: 박스 좌표 [x1, y1, x2, y2]
+			image_path: 원본 이미지 파일 경로 (PaddleOCR 사용 시 필요)
 
-		if self.use_paddleocr:
-			# PaddleOCR 사용
-			return self._extract_text_paddleocr(crop_img)
+		Returns:
+			추출된 텍스트
+		"""
+		if self.use_paddleocr and self.paddle_helper:
+			# PaddleOCR Helper 사용 (subprocess 기반)
+			if image_path is None:
+				# 임시 파일로 저장
+				import tempfile
+				with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+					img.save(f.name)
+					image_path = f.name
+					result = self.paddle_helper.extract_text_single(image_path, box)
+					os.unlink(image_path)
+					return self._postprocess_text(result)
+			else:
+				result = self.paddle_helper.extract_text_single(image_path, box)
+				return self._postprocess_text(result)
 		else:
-			# Tesseract 사용
+			# Tesseract 사용 (레거시)
+			x1, y1, x2, y2 = map(int, box)
+			pad = 12
+			x1p, y1p = max(0, x1 - pad), max(0, y1 - pad)
+			x2p, y2p = min(img.width, x2 + pad), min(img.height, y2 + pad)
+			crop_img = img.crop((x1p, y1p, x2p, y2p))
 			return self._extract_text_tesseract(crop_img, x2p - x1p, y2p - y1p)
 
-	def _extract_text_paddleocr(self, crop_img: Image.Image) -> str:
-		"""PaddleOCR을 사용한 텍스트 추출"""
-		try:
-			# PIL Image를 numpy array로 변환 (RGB)
-			img_array = np.array(crop_img)
+	def extract_text_batch(self, image_path: str, boxes: List[np.ndarray]) -> List[str]:
+		"""여러 박스에서 텍스트 일괄 추출 (PaddleOCR 사용 시 효율적)
 
-			# PaddleOCR 실행 (PaddleOCR 3.3+ API)
-			# result: [OCRResult, ...]
-			result = self.paddle_ocr.predict(img_array)
+		Args:
+			image_path: 이미지 파일 경로
+			boxes: 박스 좌표 리스트 [[x1,y1,x2,y2], ...]
 
-			if not result or not isinstance(result, list) or len(result) == 0:
-				return ""
-
-			# 첫 번째 결과에서 텍스트와 점수 추출
-			ocr_result = result[0]
-			texts = ocr_result.get('rec_texts', [])
-			scores = ocr_result.get('rec_scores', [])
-
-			if not texts:
-				return ""
-
-			# Confidence가 0.5 이상인 텍스트만 결합
-			filtered_texts = []
-			for i, text in enumerate(texts):
-				score = scores[i] if i < len(scores) else 0.0
-				if score >= 0.5:
-					filtered_texts.append(text)
-
-			# 텍스트 결합
-			raw = " ".join(filtered_texts)
-
-			# 후처리
-			return self._postprocess_text(raw)
-
-		except Exception as e:
-			print(f"Warning: PaddleOCR failed: {e}")
-			import traceback
-			traceback.print_exc()
-			return ""
+		Returns:
+			추출된 텍스트 리스트
+		"""
+		if self.use_paddleocr and self.paddle_helper:
+			# PaddleOCR Helper 사용 (batch 처리)
+			raw_texts = self.paddle_helper.extract_text_batch(image_path, boxes)
+			return [self._postprocess_text(t) for t in raw_texts]
+		else:
+			# Tesseract 사용 (개별 처리)
+			img = Image.open(image_path)
+			results = []
+			for box in boxes:
+				x1, y1, x2, y2 = map(int, box)
+				pad = 12
+				x1p, y1p = max(0, x1 - pad), max(0, y1 - pad)
+				x2p, y2p = min(img.width, x2 + pad), min(img.height, y2 + pad)
+				crop_img = img.crop((x1p, y1p, x2p, y2p))
+				text = self._extract_text_tesseract(crop_img, x2p - x1p, y2p - y1p)
+				results.append(text)
+			return results
 
 	def _extract_text_tesseract(self, crop_img: Image.Image, roi_w: int, roi_h: int) -> str:
 		"""Tesseract를 사용한 텍스트 추출 (레거시)"""
@@ -438,22 +441,12 @@ class ElementExtractor:
 		# 공백 정규화
 		text = ' '.join(raw_text.split())
 
-		# OCR 오류 수정
-		corrections = {
-			'0': ['O', 'o'],
-			'1': ['l', 'I', '|'],
-			'5': ['S'],
-			'8': ['B'],
-		}
-
-		# 숫자가 많은 문자열에서 교정
-		if any(c.isdigit() for c in text):
-			for correct, wrongs in corrections.items():
-				for wrong in wrongs:
-					text = text.replace(wrong, correct)
+		# PaddleOCR은 이미 정확하므로 교정 로직 비활성화
+		# Tesseract는 여전히 필요하지만, 전체 문자열이 아닌 개별 단어에 적용해야 함
+		# 현재는 비활성화하여 "Product" → "Pr0duct" 같은 오교정 방지
 
 		# 허용된 문자만 유지
-		allowed_chars = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz가-힣 ,.-%₩:()[]#/@&+")
+		allowed_chars = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz가-힣 ,.-%₩:()[]#/@&+=")
 		cleaned = ''.join(c for c in text if c in allowed_chars or '\uAC00' <= c <= '\uD7A3')
 
 		return cleaned.strip()
