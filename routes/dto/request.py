@@ -9,3 +9,6 @@ class InteractionRequest(BaseModel):
     currentUrl: str
     currentPage: str
     figmaUrl: str
+
+class UITestRequest(BaseModel):
+    figmaJsonUrl: str

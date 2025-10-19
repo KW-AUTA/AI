@@ -4,49 +4,105 @@ YOLO 기반 요소 매칭 패키지
 이 패키지는 Figma 디자인과 웹 페이지 간의 요소 매칭을 수행합니다.
 """
 
-from .models import (
+from .core.models import (
     # Enum 클래스들
-    InteractionType,
-    TriggerType,
-    NavigationType,
-    PositionType,
     
     # 데이터 클래스들
-    Vector,
-    Overlay,
-    NodeInteraction,
     UrlInteraction,
-    Interaction,
     FigmaElement,
     WebElement,
     MatchResult
 )
 
-from .element_matcher import ElementExtractor
-from .tree_loader import TreeNode
-from .visualize_interaction import FigmaVisualizer
-
+from .core.element_matcher import ElementExtractor as LegacyElementExtractor
+from .core.extractor import ElementExtractor, create_extractor
+from .core.matcher import SimilarityMatcher, create_similarity_matcher
+from .core.pipeline import UIMatchingPipeline, create_pipeline, quick_match
+from .utils.tree_loader import TreeManager, TreeNode
+from .visualization.visualizer import Visualizer, VisualizerConfig, create_visualizer
+from .visualization.visualize_interaction import FigmaVisualizer
+from .utils.errorChecker import ErrorChecker, ErrorManager, ErrorCheckConfig
+from .figma.figma import (
+    FigmaDataLoader,
+    FigmaDocument,
+    FigmaFrame,
+    FigmaElementTree,
+    FigmaBox,
+    FigmaBoxPair,
+    FigmaProcessor,
+    FigmaProcessorConfig,
+)
+from .utils.figma_utility import FigmaUtilityManager, FigmaUtilityConfig
+from .core.mapping_processor import (
+    MappingProcessor,
+    MappingConfig,
+    TimeManager,
+    SeedManager,
+    MatchCategorizer,
+    ElementExtractorHelper
+)
+from .core.distributed_processor import DistributedProcessor, RayConfig, create_distributed_processor
+from .web.web_navigator import WebNavigator, WebNavigatorConfig, create_web_navigator
+from .utils.error_list import *
 __all__ = [
     # Enum 클래스들
-    'InteractionType',
-    'TriggerType', 
-    'NavigationType',
-    'PositionType',
-    
+
     # 데이터 클래스들
-    'Vector',
-    'Overlay',
-    'NodeInteraction',
     'UrlInteraction',
-    'Interaction',
     'FigmaElement',
     'WebElement',
     'MatchResult',
-    
-    # 메인 클래스들
+
+    # 새로운 클래스들 (권장)
     'ElementExtractor',
+    'SimilarityMatcher',
+    'UIMatchingPipeline',
+    'FigmaUtilityManager',
+    'MappingProcessor',
+    'DistributedProcessor',
+    'Visualizer',
+    'WebNavigator',
+
+    # 설정 클래스들
+    'FigmaUtilityConfig',
+    'MappingConfig',
+    'RayConfig',
+    'VisualizerConfig',
+    'WebNavigatorConfig',
+
+    # 헬퍼 클래스들
+    'TimeManager',
+    'SeedManager',
+    'MatchCategorizer',
+    'ElementExtractorHelper',
+
+    # 팩토리 함수들
+    'create_extractor',
+    'create_similarity_matcher',
+    'create_pipeline',
+    'create_distributed_processor',
+    'create_visualizer',
+    'create_web_navigator',
+    'quick_match',
+
+    # 레거시 클래스들 (하위 호환성)
+    'LegacyElementExtractor',
+
+    # 기타 유틸리티 클래스들
+    'TreeManager',
     'TreeNode',
     'FigmaVisualizer',
+    'ErrorChecker',
+    'ErrorManager',
+    'ErrorCheckConfig',
+    'FigmaDataLoader',
+    'FigmaDocument',
+    'FigmaFrame',
+    'FigmaElementTree',
+    'FigmaBox',
+    'FigmaBoxPair',
+    'FigmaProcessor',
+    'FigmaProcessorConfig',
 ]
 
 __version__ = "1.0.0" 
