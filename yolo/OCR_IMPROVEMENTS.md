@@ -138,11 +138,21 @@ SIM_DEBUG=1
 
 ## 제한사항
 
-### macOS PaddlePaddle 커널 충돌
+### macOS PaddlePaddle 커널 충돌 ⚠️
 - **문제**: YOLO(Ultralytics)와 PaddlePaddle이 동시에 로드되면 커널 충돌 발생
-- **오류**: `Unsupported kernel argument type`
-- **해결**: PaddleOCR을 별도 스크립트(`test_paddle_standalone.py`)로 사용
-- **권장**: 프로덕션 환경에서는 Linux 사용 또는 EasyOCR 고려
+- **오류**: `Unsupported kernel argument type NSt3__112basic_stringI...`
+- **원인**: PaddlePaddle의 phi::SetKernelArgsDef가 C++ string 타입을 지원하지 않음
+- **시도한 해결책**:
+  - ✗ 환경변수 설정 (`KMP_DUPLICATE_LIB_OK`, `OMP_NUM_THREADS`)
+  - ✗ PaddlePaddle 플래그 설정 (`FLAGS_use_mkldnn=False`)
+  - ✓ **PaddleOCR 단독 스크립트만 작동**
+
+### 실용적 해결책
+1. **개발/테스트**: `test_paddle_standalone.py` 사용 (100% 안정)
+2. **프로덕션**:
+   - Linux 환경에서 PaddleOCR 통합 시도
+   - 또는 EasyOCR로 교체 (PyTorch 기반, 충돌 적음)
+3. **현재**: Tesseract + 개선된 전처리 사용 (일부 케이스 실패)
 
 ### Tesseract 한계
 - 외곽선 스타일 텍스트 인식 불가

@@ -127,7 +127,7 @@ class ElementExtractor:
 		yolo_model_path: str = None,
 		resize_size: Tuple[int, int] = (736, 736),
 		debug_similarity: bool = False,
-		use_paddleocr: bool = True
+		use_paddleocr: bool = False  # macOS 충돌 문제로 기본값 False
 	):
 		"""
 		Args:
@@ -136,8 +136,10 @@ class ElementExtractor:
 			debug_similarity: 디버그 모드 활성화
 			use_paddleocr: PaddleOCR 사용 여부 (기본값: True, False이면 Tesseract 사용)
 		"""
-		# macOS OpenMP 충돌 방지
+		# macOS 환경 설정 (PaddlePaddle + YOLO 충돌 방지)
 		os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+		os.environ['OMP_NUM_THREADS'] = '1'
+		os.environ['MKL_NUM_THREADS'] = '1'
 
 		# YOLO 모델 초기화
 		current_dir = os.path.dirname(__file__)
@@ -148,17 +150,39 @@ class ElementExtractor:
 		self.debug_similarity = debug_similarity or str(os.environ.get('SIM_DEBUG', '1')).lower() in ('1', 'true', 'yes')
 
 		# OCR 엔진 선택
-		# macOS에서 YOLO와 PaddlePaddle 커널 충돌로 인해 Tesseract 사용
-		# PaddleOCR은 test_paddle_standalone.py로 별도 테스트 가능
-		self.use_paddleocr = False  # macOS 호환성 문제로 비활성화
+		self.use_paddleocr = use_paddleocr
 
-		# Tesseract OCR 설정 (한글+영어 지원)
-		tessdata_dir = "/usr/local/share/tessdata"
-		self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
-		self.api.SetVariable("user_defined_dpi", "300")
-		self.api.SetVariable("tessedit_char_blacklist", "")
-		self.api.SetVariable("preserve_interword_spaces", "1")
-		self.paddle_ocr = None
+		if use_paddleocr:
+			# PaddleOCR 초기화
+			try:
+				from paddleocr import PaddleOCR
+				import logging
+				logging.getLogger('ppocr').setLevel(logging.ERROR)
+
+				# 환경변수 추가 설정
+				os.environ['FLAGS_use_mkldnn'] = 'False'
+				os.environ['GLOG_v'] = '0'
+
+				self.paddle_ocr = PaddleOCR(lang='en')
+				self.api = None
+				print("✓ PaddleOCR 초기화 성공")
+			except Exception as e:
+				print(f"⚠️ PaddleOCR 초기화 실패, Tesseract로 폴백: {e}")
+				self.use_paddleocr = False
+				tessdata_dir = "/usr/local/share/tessdata"
+				self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
+				self.api.SetVariable("user_defined_dpi", "300")
+				self.api.SetVariable("tessedit_char_blacklist", "")
+				self.api.SetVariable("preserve_interword_spaces", "1")
+				self.paddle_ocr = None
+		else:
+			# Tesseract OCR 설정 (한글+영어 지원)
+			tessdata_dir = "/usr/local/share/tessdata"
+			self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
+			self.api.SetVariable("user_defined_dpi", "300")
+			self.api.SetVariable("tessedit_char_blacklist", "")
+			self.api.SetVariable("preserve_interword_spaces", "1")
+			self.paddle_ocr = None
 
 		# Image transform
 		self.transform = T.Compose([
