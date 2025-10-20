@@ -243,23 +243,34 @@ class UIMatchingPipeline:
             with WebNavigator() as navigator:
                 navigator.navigate(current_url)
                 web_image = navigator.capture_full_page()
-            
+
             # Figma 데이터 로드
-            figma_document = self.figma_processor.load_document(figma_url)
-            figma_data = figma_document.raw_data
-            
+            # URL인 경우 먼저 fetch
+            if figma_url.startswith(('http://', 'https://')):
+                import requests
+                self.logger.info(f"Fetching Figma data from URL: {figma_url}")
+                response = requests.get(figma_url)
+                response.raise_for_status()
+                figma_data = response.json()
+            else:
+                # 파일 경로인 경우 FigmaProcessor 사용
+                figma_document = self.figma_processor.load_document(figma_url)
+                figma_data = figma_document.raw_data
+
             # 파이프라인 실행
             result = self.process_figma_and_web(figma_data, web_image)
-            
+
             if result.stage == ProcessingStage.COMPLETED:
                 # 기존 반환 형식에 맞게 변환
                 return self._convert_to_legacy_format(result)
             else:
                 self.logger.error(f"Pipeline failed: {result.error_message}")
                 return []
-                
+
         except Exception as e:
             self.logger.error(f"Mapping process failed: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     def _validate_inputs(self, figma_data: Any, web_image: Any) -> None:
