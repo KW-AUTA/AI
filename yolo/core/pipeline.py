@@ -247,10 +247,8 @@ class UIMatchingPipeline:
         current_page: str,
         figma_url: str
     ) -> List[Any]:
-        """기존 mapping 함수 호환 인터페이스 - 인터랙션 처리 포함"""
+        """기존 mapping 함수 호환 인터페이스 - 완전한 객체 지향 구현"""
         try:
-            from .mapping import match_interaction, process_matches, convert_raw_to_tree, get_start_x
-            from .element_matcher import ElementExtractor as LegacyElementExtractor
             from ..web.web_navigator import WebNavigatorConfig
 
             # Figma 문서 로드 (객체 기반)
@@ -264,13 +262,10 @@ class UIMatchingPipeline:
                     f"Available frames: {figma_document.frame_names}"
                 )
 
-            # 프레임에서 이미지와 트리 가져오기
+            # 프레임에서 이미지 가져오기
             root_image = frame.img
             if not frame.has_image:
                 raise ValueError(f"Frame '{current_page}' has no image")
-
-            # Figma 트리 구조 생성 (레거시 호환용)
-            figma_tree_node = convert_raw_to_tree(frame.raw_node_data, root_image)
 
             # 인터랙션 정보
             figma_interactions = figma_document.interactions
@@ -312,20 +307,16 @@ class UIMatchingPipeline:
                 self.logger.info(f"Found {len(matches_interaction)} matches with interactions")
                 self.logger.info(f"Found {len(matches_no_interaction)} matches without interactions")
 
-                # 기존 반환 형식으로 변환
+                # 결과 변환
                 return_matches = []
 
-                # 인터랙션이 있는 요소 처리
+                # 인터랙션 테스트 (객체 지향 방식)
                 if matches_interaction and figma_interactions:
-                    matcher = LegacyElementExtractor(resize_size=(736, 736))
-                    interaction_results = match_interaction(
-                        matcher,
+                    interaction_results = self._test_interactions(
                         matches_interaction,
-                        web_navigator,
-                        web_image,
                         figma_interactions,
-                        figma_tree_node,
-                        figma_tree_list
+                        web_navigator,
+                        figma_document
                     )
                     return_matches.extend(interaction_results)
 
@@ -600,6 +591,66 @@ class UIMatchingPipeline:
         except Exception as e:
             self.logger.warning(f"Visualization failed: {e}")
     
+    def _test_interactions(
+        self,
+        matches_with_interaction: List[MatchResult],
+        interactions: List[Dict],
+        web_navigator: WebNavigator,
+        figma_document: 'FigmaDocument'
+    ) -> List[Any]:
+        """인터랙션 테스트 (객체 지향 방식)"""
+        from routes.dto.response import InteractionMappingInfo, RoutingMappingInfo
+        from .interaction_tester import InteractionTester
+
+        # Figma 이미지 딕셔너리 생성
+        figma_images = {frame.id: frame.img for frame in figma_document.frames if frame.has_image}
+
+        # InteractionTester 생성
+        tester = InteractionTester(web_navigator, figma_images)
+
+        # 인터랙션별 매핑 생성 (빠른 검색용)
+        interaction_by_source = {
+            interaction['interactionType']['sourceId']: interaction
+            for interaction in interactions
+        }
+
+        results = []
+
+        # 각 매칭에 대해 인터랙션 테스트
+        for match in matches_with_interaction:
+            interaction = interaction_by_source.get(match.figma.id)
+            if not interaction:
+                continue
+
+            self.logger.info(f"Testing interaction for {match.figma.name}: {interaction['interactionType']['navigation']}")
+
+            # 인터랙션 테스트 실행
+            test_results = tester.test_interaction(match, interaction)
+
+            # 결과를 레거시 형식으로 변환
+            for test_result in test_results:
+                if test_result.interaction_type in ['NAVIGATE']:
+                    results.append(RoutingMappingInfo(
+                        type="ROUTING",
+                        componentName=test_result.component_name,
+                        destinationFigmaPage=test_result.destination_page,
+                        destinationUrl=test_result.destination_url,
+                        actualUrl=test_result.destination_url,
+                        failReason=test_result.fail_reason,
+                        isSuccess=test_result.is_success
+                    ))
+                else:  # OVERLAY, BACK
+                    results.append(InteractionMappingInfo(
+                        type="INTERACTION",
+                        componentName=test_result.component_name,
+                        expectedAction=test_result.expected_action,
+                        actualAction=test_result.actual_action,
+                        failReason=test_result.fail_reason,
+                        isSuccess=test_result.is_success
+                    ))
+
+        return results
+
     def _convert_to_legacy_format(self, result: PipelineResult) -> List[Any]:
         """기존 반환 형식으로 변환"""
         from routes.dto.response import GeneralMappingInfo, BaseMappingInfo
