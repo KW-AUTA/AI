@@ -7,6 +7,6 @@ __pycache__/
 static
 json_server
 yolo/weight
-yolo/models_weights
+yolo/weights
 yolo/core/debug_sim
 yolo/webui
