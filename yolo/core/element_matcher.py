@@ -168,7 +168,7 @@ class ElementExtractor:
 		# YOLO 모델 초기화
 		current_dir = os.path.dirname(__file__)
 		if yolo_model_path is None:
-			yolo_model_path = os.path.join(current_dir, "..", "models_weights", "best_one.pt")
+				yolo_model_path = os.path.join(current_dir, "..", "models_weights", "best_one.pt")
 		self.yolo = YOLO(yolo_model_path, task='detect', verbose=False)
 		self.resize_size = resize_size
 		self.debug_similarity = debug_similarity or str(os.environ.get('SIM_DEBUG', '1')).lower() in ('1', 'true', 'yes')
@@ -186,7 +186,15 @@ class ElementExtractor:
 			except Exception as e:
 				print(f"⚠️ PaddleOCR Helper 초기화 실패, Tesseract로 폴백: {e}")
 				self.use_paddleocr = False
-				tessdata_dir = "/usr/local/share/tessdata"
+				possible_paths = [
+						"/usr/share/tesseract-ocr/5/tessdata",
+						"/usr/share/tessdata",
+						"/usr/local/share/tessdata"
+				]
+				tessdata_dir = next((p for p in possible_paths if os.path.exists(p)), None)
+				if tessdata_dir is None:
+						raise RuntimeError("❌ Tesseract tessdata를 찾을 수 없습니다. 설치 확인 필요.")
+
 				self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
 				self.api.SetVariable("user_defined_dpi", "300")
 				self.api.SetVariable("tessedit_char_blacklist", "")
@@ -194,7 +202,16 @@ class ElementExtractor:
 				self.paddle_helper = None
 		else:
 			# Tesseract OCR 설정 (한글+영어 지원)
-			tessdata_dir = "/usr/local/share/tessdata"
+			
+			possible_paths = [
+						"/usr/share/tesseract-ocr/5/tessdata",
+						"/usr/share/tessdata",
+						"/usr/local/share/tessdata"
+			]
+			tessdata_dir = next((p for p in possible_paths if os.path.exists(p)), None)
+			if tessdata_dir is None:
+				raise RuntimeError("❌ Tesseract tessdata를 찾을 수 없습니다. 설치 확인 필요.")
+
 			self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
 			self.api.SetVariable("user_defined_dpi", "300")
 			self.api.SetVariable("tessedit_char_blacklist", "")
