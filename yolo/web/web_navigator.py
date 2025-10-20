@@ -49,10 +49,7 @@ class WebNavigator:
 		"""
 		self.config = config or WebNavigatorConfig()
 		self.opts = Options()
-
-		if self.config.headless:
-			self.opts.add_argument('--headless=new')
-
+		self.opts.add_argument('--headless=new')
 		self.opts.add_argument('--no-sandbox')
 		self.opts.add_argument('--disable-dev-shm-usage')
 		self.opts.add_argument('--disable-gpu')
@@ -60,9 +57,8 @@ class WebNavigator:
 		self.opts.add_argument('--remote-allow-origins=*')
 
 		import tempfile
-		temp_profile_dir = tempfile.mkdtemp(prefix="selenium-profile-")
-		self.opts.add_argument(f'--user-data-dir={temp_profile_dir}')
-
+		tmp_dir = tempfile.mkdtemp()
+		self.opts.add_argument(f'--user-data-dir={tmp_dir}')
 		service = ChromeService(ChromeDriverManager().install())
 		self.driver = webdriver.Chrome(service=service, options=self.opts)
 

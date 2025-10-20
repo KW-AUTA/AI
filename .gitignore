@@ -8,5 +8,6 @@ static
 json_server
 yolo/weight
 yolo/weights
+yolo/models_weights
 yolo/core/debug_sim
 yolo/webui
