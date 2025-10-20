@@ -242,8 +242,15 @@ class UIMatchingPipeline:
             # Figma 데이터 로드 (URL 또는 파일 경로 모두 지원)
             figma_document = self.figma_processor.load_document(figma_url)
             figma_data = figma_document.raw_data
-            root_frame = get_frame_by_name_from_raw(figma_data, current_page)
-            root_image = get_img_by_id(root_frame['data']['id'], figma_data)
+
+            # tree는 figma_data['tree'] 리스트
+            figma_tree = figma_data.get('tree', [])
+            root_frame = get_frame_by_name_from_raw(figma_tree, current_page)
+
+            if root_frame is None:
+                raise ValueError(f"Frame '{current_page}' not found in Figma data")
+
+            root_image = get_img_by_id(root_frame['data']['id'], figma_tree)
 
             # 웹 네비게이션 및 스크린샷
             with WebNavigator() as navigator:
