@@ -310,8 +310,9 @@ class UIMatchingPipeline:
                 # 결과 변환
                 return_matches = []
 
-                # 인터랙션 테스트 (객체 지향 방식)
+                # 인터랙션 테스트 (capture_full_page_with_scroll이 이미 scroll_to_top 호출함)
                 if matches_interaction and figma_interactions:
+                    # 인터랙션 테스트 (객체 지향 방식)
                     interaction_results = self._test_interactions(
                         matches_interaction,
                         figma_interactions,

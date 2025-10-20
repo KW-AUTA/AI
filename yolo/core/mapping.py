@@ -993,7 +993,7 @@ def mapping_v2(base_url: str, current_page: str, json_url: str, **kwargs):
 		return mapping_legacy(base_url, current_page, json_url, **kwargs)
 
 
-def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False, use_new_pipeline: bool = True):
+def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False, use_new_pipeline: bool = False):
 	"""
 	메인 실행 함수 - 새로운 파이프라인과 기존 코드 호환성 제공
 	
@@ -1020,7 +1020,7 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 
 	# WebNavigatorConfig를 사용하여 설정 전달
 	from ..web.web_navigator import WebNavigatorConfig
-	nav_config = WebNavigatorConfig(headless=False, base_url=base_url)
+	nav_config = WebNavigatorConfig(headless=True, base_url=base_url)
 	web_navigator = WebNavigator(config=nav_config)
 	visualizer = Visualizer()
 
@@ -1054,6 +1054,7 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		start_x = get_start_x(figma_tree)
 		
 		logging.info("Start Web page capturing...")
+		web_navigator.navigate(base_url)
 		web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
 		logging.info("finished web page capturing\n")
 

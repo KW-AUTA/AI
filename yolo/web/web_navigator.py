@@ -240,19 +240,22 @@ class WebNavigator:
 		Returns:
 			캡처된 전체 페이지 이미지
 		"""
-		# 브라우저 창 크기 조정
+		# 브라우저 창 크기를 navigate 전에 설정 (이미지 로딩 전)
 		self.resize_window(root_img.width, target_height)
 
-		# 맨 아래까지 스크롤 후 맨 위로 복귀
+		# 웹 네비게이션 (이미 올바른 크기로 설정된 상태에서 로드)
+		self.navigate(self.config.base_url)
+
+		# 1. 맨 아래까지 스크롤하여 lazy-loading 트리거
 		self.scroll_to_bottom()
 		self.scroll_to_top()
 
-		time.sleep(self.config.scroll_wait_time)
+		time.sleep(self.config.page_settle_time)
 
-		# 전체 페이지 캡처
+		# 2. CDP로 전체 페이지 캡처
 		web_img = self.capture_full_page()
 
-		# 이미지 크기 조정
+		# 3. 이미지 크기 조정
 		scale = web_img.width / root_img.width
 		web_img = web_img.resize((root_img.width, int(web_img.height / scale)))
 
