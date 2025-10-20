@@ -25,7 +25,7 @@ from selenium.webdriver.support import expected_conditions as EC
 @dataclass(frozen=True)
 class WebNavigatorConfig:
 	"""웹 네비게이터 설정 클래스"""
-	headless: bool = False
+	headless: bool = True
 	base_url: str = "https://www.kw.ac.kr/ko/index.jsp"
 	page_load_timeout: int = 30
 	element_wait_timeout: int = 10
@@ -240,9 +240,6 @@ class WebNavigator:
 		Returns:
 			캡처된 전체 페이지 이미지
 		"""
-		# 웹 네비게이션
-		self.navigate(self.config.base_url)
-
 		# 브라우저 창 크기 조정
 		self.resize_window(root_img.width, target_height)
 
@@ -250,7 +247,8 @@ class WebNavigator:
 		self.scroll_to_bottom()
 		self.scroll_to_top()
 
-		time.sleep(self.config.page_settle_time)
+		time.sleep(self.config.scroll_wait_time)
+
 		# 전체 페이지 캡처
 		web_img = self.capture_full_page()
 

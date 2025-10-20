@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from contextlib import contextmanager
 from pathlib import Path
 from enum import Enum
-
+import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
@@ -195,19 +195,29 @@ class UIMatchingPipeline:
             
             # Figma 요소 추출
             with self._track_stage(ProcessingStage.FIGMA_EXTRACTION):
-                figma_elements = self._extract_figma_elements(figma_data_or_path)
+                # figma_data_or_path가 dict인 경우 current_page를 포함할 수 있도록 처리
+                current_page = None
+                figma_interactions = None
+
+                if isinstance(figma_data_or_path, dict):
+                    if '_current_page' in figma_data_or_path:
+                        current_page = figma_data_or_path.pop('_current_page')
+                    # interactions 정보 추출 (매칭에 사용)
+                    figma_interactions = figma_data_or_path.get('interactions', [])
+
+                figma_elements = self._extract_figma_elements(figma_data_or_path, current_page)
                 self._current_result.figma_elements = figma_elements
-            
+
             # 웹 요소 추출
             with self._track_stage(ProcessingStage.WEB_EXTRACTION):
                 web_image = self._prepare_web_image(web_image_or_url)
                 web_elements = self._extract_web_elements(web_image)
                 self._current_result.web_elements = web_elements
-            
-            # 매칭 수행
+
+            # 매칭 수행 (인터랙션 정보 전달)
             with self._track_stage(ProcessingStage.MATCHING):
                 matches, unmatched_figma, unmatched_web = self._perform_matching(
-                    figma_elements, web_elements
+                    figma_elements, web_elements, figma_interactions
                 )
                 self._current_result.matches = matches
                 self._current_result.unmatched_figma = unmatched_figma
@@ -237,35 +247,97 @@ class UIMatchingPipeline:
         current_page: str,
         figma_url: str
     ) -> List[Any]:
-        """기존 mapping 함수 호환 인터페이스"""
+        """기존 mapping 함수 호환 인터페이스 - 인터랙션 처리 포함"""
         try:
-            # Figma 데이터 로드 (URL 또는 파일 경로 모두 지원)
+            from .mapping import match_interaction, process_matches, convert_raw_to_tree, get_start_x
+            from .element_matcher import ElementExtractor as LegacyElementExtractor
+            from ..web.web_navigator import WebNavigatorConfig
+
+            # Figma 문서 로드 (객체 기반)
             figma_document = self.figma_processor.load_document(figma_url)
-            figma_data = figma_document.raw_data
 
-            # tree는 figma_data['tree'] 리스트
-            figma_tree = figma_data.get('tree', [])
-            root_frame = get_frame_by_name_from_raw(figma_tree, current_page)
+            # 프레임 찾기 (객체 메서드 사용)
+            frame = figma_document.get_frame_by_name(current_page)
+            if frame is None:
+                raise ValueError(
+                    f"Frame '{current_page}' not found. "
+                    f"Available frames: {figma_document.frame_names}"
+                )
 
-            if root_frame is None:
-                raise ValueError(f"Frame '{current_page}' not found in Figma data")
+            # 프레임에서 이미지와 트리 가져오기
+            root_image = frame.img
+            if not frame.has_image:
+                raise ValueError(f"Frame '{current_page}' has no image")
 
-            root_image = get_img_by_id(root_frame['data']['id'], figma_tree)
+            # Figma 트리 구조 생성 (레거시 호환용)
+            figma_tree_node = convert_raw_to_tree(frame.raw_node_data, root_image)
 
-            # 웹 네비게이션 및 스크린샷
-            with WebNavigator() as navigator:
-                navigator.navigate(current_url)
-                web_image = navigator.capture_full_page_with_scroll(root_image, 720)
+            # 인터랙션 정보
+            figma_interactions = figma_document.interactions
 
-            # 파이프라인 실행
-            result = self.process_figma_and_web(figma_data, web_image)
+            # current_page를 figma_data에 추가 (process_figma_and_web에서 사용)
+            figma_data_with_page = figma_document.raw_data.copy()
+            figma_data_with_page['_current_page'] = current_page
 
-            if result.stage == ProcessingStage.COMPLETED:
-                # 기존 반환 형식에 맞게 변환
-                return self._convert_to_legacy_format(result)
-            else:
-                self.logger.error(f"Pipeline failed: {result.error_message}")
-                return []
+            # 웹 네비게이터 생성 (인터랙션 테스트에 필요)
+            nav_config = WebNavigatorConfig(headless=True, base_url=current_url)
+            web_navigator = WebNavigator(config=nav_config)
+
+            try:
+                web_navigator.navigate(current_url)
+                web_image = web_navigator.capture_full_page_with_scroll(root_image, 720)
+
+                # 파이프라인 실행
+                result = self.process_figma_and_web(figma_data_with_page, web_image)
+
+                if result.stage != ProcessingStage.COMPLETED:
+                    self.logger.error(f"Pipeline failed: {result.error_message}")
+                    return []
+
+                # 인터랙션/일반 요소 분리
+                interaction_source_ids = {
+                    interaction['interactionType']['sourceId']
+                    for interaction in figma_interactions
+                }
+
+                matches_interaction = [
+                    m for m in result.matches
+                    if m.figma and m.figma.id in interaction_source_ids
+                ]
+                matches_no_interaction = [
+                    m for m in result.matches
+                    if m.figma and m.figma.id not in interaction_source_ids
+                ]
+
+                self.logger.info(f"Found {len(matches_interaction)} matches with interactions")
+                self.logger.info(f"Found {len(matches_no_interaction)} matches without interactions")
+
+                # 기존 반환 형식으로 변환
+                return_matches = []
+
+                # 인터랙션이 있는 요소 처리
+                if matches_interaction and figma_interactions:
+                    matcher = LegacyElementExtractor(resize_size=(736, 736))
+                    interaction_results = match_interaction(
+                        matcher,
+                        matches_interaction,
+                        web_navigator,
+                        web_image,
+                        figma_interactions,
+                        figma_tree_node,
+                        figma_tree_list
+                    )
+                    return_matches.extend(interaction_results)
+
+                # 일반 요소 처리
+                general_results = self._convert_to_legacy_format(result)
+                return_matches.extend(general_results)
+
+                return return_matches
+
+            finally:
+                if web_navigator and web_navigator.driver is not None:
+                    web_navigator.quit()
 
         except Exception as e:
             self.logger.error(f"Mapping process failed: {e}")
@@ -283,18 +355,75 @@ class UIMatchingPipeline:
         
         # 추가 검증 로직...
     
-    def _extract_figma_elements(self, figma_data_or_path: Union[str, dict, Path]) -> List[FigmaFare]:
-        """Figma 요소 추출"""
+    def _extract_figma_elements(
+        self,
+        figma_data_or_path: Union[str, dict, Path],
+        current_page: Optional[str] = None
+    ) -> List[FigmaFare]:
+        """Figma 요소 추출 - YOLO로 검출 후 트리와 매칭"""
+        from .element_matcher import ElementExtractor as LegacyElementExtractor
+        from ..utils.tree_loader import TreeManager
+        from .mapping import extract_elements, fare_figma_extracted, convert_raw_to_tree, get_start_x
+
         # Figma 데이터 로딩
-        document = self.figma_processor.load_document(figma_data_or_path)
+        if isinstance(figma_data_or_path, dict):
+            figma_data = figma_data_or_path
+        else:
+            document = self.figma_processor.load_document(figma_data_or_path)
+            figma_data = document.raw_data
 
-        figma_data = document.raw_data
+        # tree 추출
+        figma_tree_list = figma_data.get('tree', [])
+        figma_interactions = figma_data.get('interactions', [])
 
-        # TODO: Figma 데이터에서 FigmaFare 객체 생성 로직 구현
-        # 현재는 빈 리스트 반환
-        figma_elements = []
-        
-        self.logger.info(f"Extracted {len(figma_elements)} Figma elements")
+        # current_page가 지정되지 않으면 첫 번째 프레임 사용
+        if current_page:
+            root_frame = get_frame_by_name_from_raw(figma_tree_list, current_page)
+            if root_frame is None:
+                raise ValueError(f"Frame '{current_page}' not found in Figma data")
+        else:
+            root_frame = figma_tree_list[0] if figma_tree_list else None
+            if root_frame is None:
+                raise ValueError("No frames found in Figma data")
+
+        # 루트 이미지 가져오기 (FigmaFrame 객체 사용하면 자동으로 RGB 변환됨)
+        root_image = get_img_by_id(root_frame['data']['id'], figma_tree_list)
+        if root_image is None:
+            raise ValueError("Failed to load Figma root image")
+
+        # 이미지가 RGB가 아니면 변환 (안전장치)
+        if root_image.mode == 'RGBA':
+            background = Image.new('RGB', root_image.size, (255, 255, 255))
+            background.paste(root_image, mask=root_image.split()[3])
+            root_image = background
+        elif root_image.mode != 'RGB':
+            root_image = root_image.convert('RGB')
+
+        # Figma 트리 구조 생성
+        figma_tree_node = convert_raw_to_tree(root_frame, root_image)
+        start_x = get_start_x(figma_tree_node)
+
+        # YOLO로 요소 추출
+        matcher = LegacyElementExtractor(resize_size=(736, 736))
+        target_height = 720
+        figma_extracted = extract_elements(
+            root_image,
+            start_x,
+            target_height,
+            matcher,
+            speed_mode="balanced"
+        )
+
+        self.logger.info(f"Extracted {len(figma_extracted)} raw elements from Figma image")
+
+        # Figma 트리와 YOLO 검출 결과 매칭
+        figma_elements = fare_figma_extracted(
+            figma_tree_node,
+            figma_extracted,
+            figma_interactions
+        )
+
+        self.logger.info(f"Matched {len(figma_elements)} Figma elements with tree nodes")
         return figma_elements
     
     def _prepare_web_image(self, web_image_or_url: Union[str, Image.Image, Path]) -> Image.Image:
@@ -336,22 +465,100 @@ class UIMatchingPipeline:
     def _perform_matching(
         self,
         figma_elements: List[FigmaFare],
-        web_elements: List[ExtractedElement]
-    ) -> Tuple[List[MatchResult], List[MatchResult], List[MatchResult]]:
-        """매칭 수행"""
-        matches, unmatched_figma, unmatched_web = self.matcher.find_matches(
-            figma_elements,
-            web_elements,
-            min_similarity=self.config.min_similarity_threshold
-        )
-        
+        web_elements: List[ExtractedElement],
+        figma_interactions: Optional[List[Dict]] = None
+    ) -> Tuple[List[MatchResult], List[MatchResult], List[ExtractedElement]]:
+        """매칭 수행 - 인터랙션 우선순위 적용"""
+
+        # 인터랙션 정보가 있으면 분리하여 우선 매칭
+        if figma_interactions:
+            interaction_source_ids = {
+                interaction['interactionType']['sourceId']
+                for interaction in figma_interactions
+            }
+
+            # 인터랙션 있는 요소와 없는 요소 분리
+            figma_with_interaction = [
+                f for f in figma_elements
+                if f.id in interaction_source_ids
+            ]
+            figma_without_interaction = [
+                f for f in figma_elements
+                if f.id not in interaction_source_ids
+            ]
+
+            self.logger.info(
+                f"Found {len(figma_with_interaction)} figma elements with interactions, "
+                f"{len(figma_without_interaction)} without"
+            )
+
+            # Step 1: 인터랙션 있는 요소 먼저 매칭
+            matches_interaction, unmatched_figma_interaction, unmatched_web_interaction = \
+                self.matcher.find_matches(
+                    figma_with_interaction,
+                    web_elements,
+                    min_similarity=self.config.min_similarity_threshold
+                )
+
+            self.logger.info(f"Matched {len(matches_interaction)} interaction elements")
+
+            # Step 2: 남은 웹 요소로 인터랙션 없는 요소 매칭
+            matched_web_ids = {id(match.web) for match in matches_interaction}
+            remaining_web_elements = [
+                web_el for web_el in web_elements
+                if id(web_el) not in matched_web_ids
+            ]
+
+            self.logger.info(f"{len(remaining_web_elements)} web elements remaining for second match")
+
+            if figma_without_interaction and remaining_web_elements:
+                matches_no_interaction, unmatched_figma_no_interaction, unmatched_web_no_interaction = \
+                    self.matcher.find_matches(
+                        figma_without_interaction,
+                        remaining_web_elements,
+                        min_similarity=self.config.min_similarity_threshold
+                    )
+                self.logger.info(f"Matched {len(matches_no_interaction)} non-interaction elements")
+            else:
+                matches_no_interaction = []
+                unmatched_figma_no_interaction = figma_without_interaction
+                unmatched_web_no_interaction = remaining_web_elements
+
+            # 결과 통합
+            all_matches = matches_interaction + matches_no_interaction
+
+            # unmatched 교집합 계산
+            unmatched_figma = []
+            for figma_el in unmatched_figma_interaction:
+                if figma_el in unmatched_figma_no_interaction:
+                    unmatched_figma.append(figma_el)
+            for figma_el in unmatched_figma_no_interaction:
+                if figma_el not in unmatched_figma_interaction:
+                    unmatched_figma.append(figma_el)
+
+            unmatched_web = []
+            for web_el in unmatched_web_interaction:
+                if web_el in unmatched_web_no_interaction:
+                    unmatched_web.append(web_el)
+            for web_el in unmatched_web_no_interaction:
+                if web_el not in unmatched_web_interaction:
+                    unmatched_web.append(web_el)
+
+        else:
+            # 인터랙션 정보가 없으면 일반 매칭
+            all_matches, unmatched_figma, unmatched_web = self.matcher.find_matches(
+                figma_elements,
+                web_elements,
+                min_similarity=self.config.min_similarity_threshold
+            )
+
         self.logger.info(
-            f"Matching completed: {len(matches)} matches, "
+            f"Matching completed: {len(all_matches)} matches, "
             f"{len(unmatched_figma)} unmatched Figma, "
             f"{len(unmatched_web)} unmatched web elements"
         )
-        
-        return matches, unmatched_figma, unmatched_web
+
+        return all_matches, unmatched_figma, unmatched_web
     
     def _post_process_results(self) -> None:
         """결과 후처리"""
@@ -395,8 +602,21 @@ class UIMatchingPipeline:
     
     def _convert_to_legacy_format(self, result: PipelineResult) -> List[Any]:
         """기존 반환 형식으로 변환"""
-        # TODO: 기존 mapping 함수의 반환 형식에 맞게 변환
-        return []
+        from routes.dto.response import GeneralMappingInfo, BaseMappingInfo
+        from ..utils.error_list import NORMAL
+
+        return_matches = []
+
+        # 모든 매칭 결과를 GeneralMappingInfo로 변환
+        for match in result.matches:
+            return_matches.append(GeneralMappingInfo(
+                type="GENERAL",
+                componentName=match.figma.name if match.figma else "Unknown",
+                failReason=", ".join(match.errorCategories) if match.errorCategories and match.errorCategories != [NORMAL] else "",
+                isSuccess=match.errorCategories == [NORMAL] if match.errorCategories else True,
+            ))
+
+        return return_matches
     
     def get_pipeline_metrics(self) -> Dict[str, Any]:
         """파이프라인 성능 메트릭"""

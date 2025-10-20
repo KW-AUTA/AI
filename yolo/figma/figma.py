@@ -145,6 +145,8 @@ class FigmaProcessor:
 		return cls(config=config)
 
 class FigmaFrame:
+	"""Figma 프레임 데이터를 관리하는 클래스 - 이미지, 트리, 메타데이터 포함"""
+
 	def __init__(
 		self,
 		data: dict,
@@ -153,8 +155,19 @@ class FigmaFrame:
 	):
 		self.raw_node_data = data
 		self._image_loader = image_loader or decode_base64_image
-		image_data = data.get("data", {}).get("image")
-		self.img = self._image_loader(image_data)
+
+		# 메타데이터 추출
+		node_data = data.get("data", {})
+		self.id = node_data.get("id", "")
+		self.name = node_data.get("name", "")
+		self.width = node_data.get("absolutePosition", {}).get("width", 0)
+		self.height = node_data.get("absolutePosition", {}).get("height", 0)
+
+		# 이미지 로드 및 RGB 변환
+		image_data = node_data.get("image")
+		self.img = self._load_and_convert_image(image_data)
+
+		# 트리 구조 초기화
 		self.element_tree = FigmaElementTree(
 			depth=0,
 			id="",
@@ -164,8 +177,35 @@ class FigmaFrame:
 		self.min_x = float('inf')
 		self.min_y = float('inf')
 		self.element_tree = self.build_element_tree()
+
 		if auto_adjust:
 			self.adjust_start_point()
+
+	def _load_and_convert_image(self, image_data: Optional[str]) -> Optional[Image.Image]:
+		"""이미지 로드 및 RGB 변환"""
+		img = self._image_loader(image_data)
+		if img is None:
+			return None
+
+		# RGBA -> RGB 변환 (YOLO는 3채널만 지원)
+		if img.mode == 'RGBA':
+			background = Image.new('RGB', img.size, (255, 255, 255))
+			background.paste(img, mask=img.split()[3])  # alpha channel as mask
+			return background
+		elif img.mode != 'RGB':
+			return img.convert('RGB')
+
+		return img
+
+	@property
+	def size(self) -> tuple[int, int]:
+		"""프레임 크기 (width, height)"""
+		return (self.width, self.height)
+
+	@property
+	def has_image(self) -> bool:
+		"""이미지가 로드되었는지 확인"""
+		return self.img is not None
 		
 	def adjust_start_point(self):
 		self._adjust_start_point_recursive(self.element_tree)
@@ -247,7 +287,7 @@ class FigmaDataLoader:
 		return response.json()
 
 class FigmaDocument:
-	"""Figma 문서 전체를 관리하는 클래스"""
+	"""Figma 문서 전체를 관리하는 클래스 - 프레임, 인터랙션, 메타데이터 포함"""
 
 	def __init__(
 		self,
@@ -256,20 +296,62 @@ class FigmaDocument:
 	):
 		self.raw_data = data
 		self._frame_factory = frame_factory or FigmaFrame
+
+		# 프레임 로드
 		self.frames = [
 			self._frame_factory(tree)
 			for tree in data.get("tree", [])
 		]
 
+		# 인터랙션 정보
+		self.interactions = data.get("interactions", [])
+
+		# 프레임 이름 매핑 (빠른 검색용)
+		self._frame_by_name = {frame.name: frame for frame in self.frames}
+		self._frame_by_id = {frame.id: frame for frame in self.frames}
+
 	def get_frame(self, index: int = 0) -> FigmaFrame:
+		"""인덱스로 프레임 가져오기"""
 		return self.frames[index]
 
+	def get_frame_by_name(self, name: str) -> Optional[FigmaFrame]:
+		"""이름으로 프레임 찾기"""
+		return self._frame_by_name.get(name)
+
+	def get_frame_by_id(self, frame_id: str) -> Optional[FigmaFrame]:
+		"""ID로 프레임 찾기"""
+		return self._frame_by_id.get(frame_id)
+
 	def get_all_frames(self) -> list[FigmaFrame]:
+		"""모든 프레임 반환"""
 		return self.frames
 
+	def get_interactions_for_frame(self, frame_name: str) -> list[dict]:
+		"""특정 프레임의 인터랙션만 필터링"""
+		frame = self.get_frame_by_name(frame_name)
+		if not frame:
+			return []
+
+		# 해당 프레임에 속한 인터랙션만 반환
+		return [
+			interaction for interaction in self.interactions
+			# TODO: 프레임별 필터링 로직 추가 필요
+		]
+
+	@property
+	def frame_names(self) -> list[str]:
+		"""모든 프레임 이름 목록"""
+		return [frame.name for frame in self.frames]
+
+	@property
+	def has_interactions(self) -> bool:
+		"""인터랙션이 있는지 확인"""
+		return len(self.interactions) > 0
+
 	def visualize_all_frames(self):
+		"""모든 프레임 시각화"""
 		for i, frame in enumerate(self.frames):
-			print(f"Frame {i}:")
+			print(f"Frame {i} ({frame.name}):")
 			frame.visualize_raw()
 
 
