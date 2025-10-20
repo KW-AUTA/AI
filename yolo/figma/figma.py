@@ -39,6 +39,30 @@ def decode_base64_image(image_data: Optional[str]) -> Optional[Image.Image]:
 		print(f"Warning: Could not decode or open image from base64 string. Error: {e}", file=sys.stderr)
 		return None
 
+
+def get_frame_by_name_from_raw(figma_raw: list, name: str) -> Optional[dict]:
+	"""Figma raw 데이터에서 이름으로 프레임 찾기"""
+	for data in figma_raw:
+		if data.get('data', {}).get('name') == name:
+			return data
+	return None
+
+
+def get_img_by_id(id: str, figma_raw: list) -> Optional[Image.Image]:
+	"""ID로 Figma 이미지 가져오기"""
+	from ..utils.utils import get_min_x
+
+	for figma_element in figma_raw:
+		if figma_element.get('data', {}).get('id') == id:
+			min_x = get_min_x(figma_element, 0)
+			img = decode_base64_image(figma_element['data']['image'])
+			if img:
+				width = figma_element['data']['absolutePosition']['width']
+				height = figma_element['data']['absolutePosition']['height']
+				img = img.crop((-min_x, 0, width - min_x, height))
+			return img
+	return None
+
 @dataclass
 class FigmaBox:
 	x: float
@@ -80,7 +104,11 @@ class FigmaProcessor:
 		return decode_base64_image(image_data)
 
 	def load_json(self, source: Union[str, Path]) -> dict:
-		"""JSON 파일 경로에서 데이터 로드"""
+		"""JSON 파일 경로 또는 URL에서 데이터 로드"""
+		# URL인 경우
+		if isinstance(source, str) and source.startswith(('http://', 'https://')):
+			return FigmaDataLoader.load_from_url(source)
+		# 파일 경로인 경우
 		return FigmaDataLoader.load_from_file(str(source))
 
 	def load_document(self, source: Union[str, Path, dict]) -> FigmaDocument:
@@ -200,15 +228,23 @@ class FigmaFrame:
 		
 	
 class FigmaDataLoader:
-	"""JSON 파일에서 Figma 데이터를 로드하는 클래스"""
+	"""JSON 파일 또는 URL에서 Figma 데이터를 로드하는 클래스"""
 	@staticmethod
 	def load_from_file(json_file_path: str) -> dict:
 		with open(json_file_path, "r") as f:
 			return json.load(f)
-	
+
 	@staticmethod
 	def load_from_string(json_string: str) -> dict:
 		return json.loads(json_string)
+
+	@staticmethod
+	def load_from_url(url: str) -> dict:
+		"""URL에서 JSON 데이터를 가져옴"""
+		import requests
+		response = requests.get(url)
+		response.raise_for_status()
+		return response.json()
 
 class FigmaDocument:
 	"""Figma 문서 전체를 관리하는 클래스"""

@@ -20,7 +20,7 @@ from PIL import Image
 from .extractor import ElementExtractor, ExtractorConfig, create_extractor
 from .matcher import SimilarityMatcher, create_similarity_matcher
 from .models import ExtractedElement, FigmaFare, MatchResult, SimilarityConfig
-from ..figma.figma import FigmaProcessor, FigmaProcessorConfig
+from ..figma.figma import FigmaProcessor, FigmaProcessorConfig, get_frame_by_name_from_raw, get_img_by_id
 from ..web.web_navigator import WebNavigator
 from ..visualization.visualizer import Visualizer
 from ..utils.errorChecker import ErrorChecker
@@ -239,23 +239,16 @@ class UIMatchingPipeline:
     ) -> List[Any]:
         """기존 mapping 함수 호환 인터페이스"""
         try:
+            # Figma 데이터 로드 (URL 또는 파일 경로 모두 지원)
+            figma_document = self.figma_processor.load_document(figma_url)
+            figma_data = figma_document.raw_data
+            root_frame = get_frame_by_name_from_raw(figma_data, current_page)
+            root_image = get_img_by_id(root_frame['data']['id'], figma_data)
+
             # 웹 네비게이션 및 스크린샷
             with WebNavigator() as navigator:
                 navigator.navigate(current_url)
-                web_image = navigator.capture_full_page()
-
-            # Figma 데이터 로드
-            # URL인 경우 먼저 fetch
-            if figma_url.startswith(('http://', 'https://')):
-                import requests
-                self.logger.info(f"Fetching Figma data from URL: {figma_url}")
-                response = requests.get(figma_url)
-                response.raise_for_status()
-                figma_data = response.json()
-            else:
-                # 파일 경로인 경우 FigmaProcessor 사용
-                figma_document = self.figma_processor.load_document(figma_url)
-                figma_data = figma_document.raw_data
+                web_image = navigator.capture_full_page_with_scroll(root_image, 720)
 
             # 파이프라인 실행
             result = self.process_figma_and_web(figma_data, web_image)
