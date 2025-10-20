@@ -242,7 +242,7 @@ class UIMatchingPipeline:
             # 웹 네비게이션 및 스크린샷
             with WebNavigator() as navigator:
                 navigator.navigate(current_url)
-                web_image = navigator.capture_screenshot()
+                web_image = navigator.capture_full_page()
             
             # Figma 데이터 로드
             figma_document = self.figma_processor.load_document(figma_url)
@@ -297,7 +297,7 @@ class UIMatchingPipeline:
                 # URL에서 스크린샷 캡처
                 with WebNavigator() as navigator:
                     navigator.navigate(str(web_image_or_url))
-                    return navigator.capture_screenshot()
+                    return navigator.capture_full_page()
             else:
                 # 파일에서 이미지 로드
                 return Image.open(web_image_or_url)

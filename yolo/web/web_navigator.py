@@ -251,7 +251,6 @@ class WebNavigator:
 		self.scroll_to_top()
 
 		time.sleep(self.config.page_settle_time)
-
 		# 전체 페이지 캡처
 		web_img = self.capture_full_page()
 

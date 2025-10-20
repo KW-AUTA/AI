@@ -41,8 +41,8 @@ def analyze_matches():
     web_navigator = WebNavigator(config=nav_config)
 
     try:
-        web_navigator.navigate_to(current_page)
-        web_img = web_navigator.capture_screenshot()
+        web_navigator.navigate(current_page)
+        web_img = web_navigator.capture_full_page()
         print(f"✓ 웹 페이지 로드 완료")
 
         # 매칭 실행
@@ -78,7 +78,7 @@ def analyze_matches():
         print(f"{'=' * 80}\n")
 
     finally:
-        web_navigator.close()
+        web_navigator.quit()
 
 if __name__ == '__main__':
     analyze_matches()

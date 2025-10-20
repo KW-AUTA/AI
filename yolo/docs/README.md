@@ -77,7 +77,7 @@ navigator.navigate("https://example.com")
 
 # 요소 추출기 초기화
 extractor = ElementExtractor()
-screenshot = navigator.capture_screenshot()
+screenshot = navigator.capture_full_page()
 web_elements = extractor.extract_elements(screenshot)
 
 # Figma 데이터 로드

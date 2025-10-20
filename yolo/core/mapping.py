@@ -993,7 +993,7 @@ def mapping_v2(base_url: str, current_page: str, json_url: str, **kwargs):
 		return mapping_legacy(base_url, current_page, json_url, **kwargs)
 
 
-def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False, use_new_pipeline: bool = None):
+def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False, use_new_pipeline: bool = True):
 	"""
 	메인 실행 함수 - 새로운 파이프라인과 기존 코드 호환성 제공
 	
