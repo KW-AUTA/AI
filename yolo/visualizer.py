@@ -2,9 +2,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import cv2
-from PIL import Image
-from typing import List
+from PIL import Image, ImageDraw, ImageFont
+from typing import List, Optional
 from .element_matcher import MatchResult
+import os
+import time
 
 class Visualizer:
     """시각화를 담당하는 클래스"""
@@ -113,4 +115,64 @@ class Visualizer:
         plt.title(f'Matching Visualization error {matches[0].errorCategories}')
         plt.show()
         print(f"\n[완료] 총 {len(matches)}개의 요소가 매칭되었습니다.")
-    
+
+    @staticmethod
+    def _save_match_crops(figma_img: Image.Image, web_img: Image.Image, matches: List[MatchResult], out_root: Optional[str] = None) -> str:
+        """Save side-by-side crops for each match with score annotations."""
+        def _clamp_box(box, w, h):
+            x1, y1, x2, y2 = map(float, box)
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            if x2 <= x1: x2 = min(w, x1 + 1)
+            if y2 <= y1: y2 = min(h, y1 + 1)
+            return int(x1), int(y1), int(x2), int(y2)
+
+        ts = time.strftime('%Y%m%d-%H%M%S')
+        if out_root is None:
+            out_root = os.path.join(os.path.dirname(__file__), 'debug_sim', 'crops', ts)
+        os.makedirs(out_root, exist_ok=True)
+
+        fw, fh = figma_img.size
+        ww, wh = web_img.size
+
+        def _safe_name(s: str) -> str:
+            return ''.join(c if c.isalnum() or c in ('-', '_') else '_' for c in (s or ''))[:40]
+
+        for idx, m in enumerate(matches):
+            if m.figma is None or m.web is None:
+                continue
+            fx1, fy1, fx2, fy2 = _clamp_box(m.figma.extracted.box, fw, fh)
+            wx1, wy1, wx2, wy2 = _clamp_box(m.web.box, ww, wh)
+            crop_f = figma_img.crop((fx1, fy1, fx2, fy2))
+            crop_w = web_img.crop((wx1, wy1, wx2, wy2))
+
+            # Compose side-by-side with header for text
+            pad = 6
+            header_h = 54
+            h = max(crop_f.height, crop_w.height) + header_h + pad * 2
+            w = crop_f.width + crop_w.width + pad * 3
+            canvas = Image.new('RGB', (w, h), (30, 30, 30))
+            draw = ImageDraw.Draw(canvas)
+
+            # Header text: scores and texts
+            header = (
+                f"score={m.score:.2f} | feat={m.feature_similarity:.2f} "
+                f"text={m.text_similarity:.2f} size={m.size_similarity:.2f} coord={m.coordinate_similarity:.2f}"
+            )
+            sub = (
+                f"fig: '{(m.figma.extracted.text or '').strip()}'  |  web: '{(m.web.text or '').strip()}'"
+            )
+            draw.text((pad, pad), header, fill=(255, 255, 255))
+            draw.text((pad, pad + 24), sub, fill=(200, 200, 200))
+
+            # Paste crops
+            y0 = header_h + pad
+            x = pad
+            canvas.paste(crop_f, (x, y0))
+            x += crop_f.width + pad
+            canvas.paste(crop_w, (x, y0))
+
+            fname = f"{idx:03d}_{_safe_name(m.figma.name)}.png" if hasattr(m.figma, 'name') else f"{idx:03d}.png"
+            canvas.save(os.path.join(out_root, fname))
+
+        return out_root

@@ -1,6 +1,6 @@
 from typing import List
 from .models import MatchResult
-
+from .error_list import *
 class ErrorChecker:
 	
 	def _coordinate_error(self, figma_box: List[int], web_box: List[int]) -> bool:
@@ -28,17 +28,17 @@ class ErrorChecker:
 	def check_error(self, figma_box: List[int], web_box: List[int], figma_text: str, web_text: str) -> List[str]:
 		errors = []
 		if not self._coordinate_error(figma_box, web_box):
-			errors.append('coordinate_error')
+			errors.append(G_ERROR_COORDINATE_X)
 		if not self._size_error(figma_box, web_box):
-			errors.append('size_error')
+			errors.append(G_ERROR_SIZE)
 		if not self._text_error(figma_text, web_text):
-			errors.append('text_error')
+			errors.append(G_ERROR_TEXT)
 		return errors
 	
 	def check_error_by_match(self, match: MatchResult) -> List[str]:
 		errors = []
 		errors.extend(self.check_error(match.figma.extracted.box, match.web.box, match.figma.extracted.text, match.web.text))
 		if len(errors) == 0:
-			return ['same']
+			return [NORMAL]
 		match.errorCategories = errors
 		return match

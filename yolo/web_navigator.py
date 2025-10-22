@@ -11,21 +11,40 @@ from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 
 class WebNavigator:
 	"""웹 네비게이션을 담당하는 클래스"""
+	MAX_H = 16000  # 크롬/OS 한계 대비
+
 	def __init__(self, headless: bool = False, base_url: str = "https://www.kw.ac.kr/ko/index.jsp"):
+		"""
+		Args:
+			config: 웹 네비게이터 설정. None이면 기본 설정 사용
+		"""
 		self.opts = Options()
+		self.opts.add_argument('--headless=new')
+		self.opts.add_argument('--no-sandbox')
+		self.opts.add_argument('--disable-dev-shm-usage')
+		self.opts.add_argument('--disable-gpu')
+		self.opts.add_argument('--disable-extensions')
+		self.opts.add_argument('--remote-allow-origins=*')
 		self.BASE_URL = base_url
-		if headless:
-			self.opts.add_argument('--headless')
+
+		import tempfile
+		tmp_dir = tempfile.mkdtemp()
+		self.opts.add_argument(f'--user-data-dir={tmp_dir}')
 		service = ChromeService(ChromeDriverManager().install())
 		self.driver = webdriver.Chrome(service=service, options=self.opts)
 
 	def navigate(self, url: str, window_size: Tuple[int, int] = (1080, 1440)):
 		"""웹 페이지로 이동"""
 		self.driver.get(url)
-		time.sleep(5)  # 페이지 로딩 대기
+		# wait for page to load
+		WebDriverWait(self.driver, 20).until(
+			lambda d: d.execute_script("return document.readyState") == "complete"
+		)
+
 
 	
 	def resize_window(self, width, height):
@@ -91,27 +110,36 @@ class WebNavigator:
 		return last_height
 
 	def capture_full_page(self) -> Image.Image:
-		"""전체 페이지 스크린샷 캡처 (CDP 명령 사용)"""
-		# CDP 명령으로 전체 페이지 스크린샷 캡처
-		result = self.driver.execute_cdp_cmd(
-			"Page.captureScreenshot",
-			{
-				"fromSurface": True,
-				"captureBeyondViewport": True
-			}
+		"""전체 페이지 스크린샷 캡처 (CDP 없이)"""
+		# 1) 페이지 로드 대기
+		WebDriverWait(self.driver, 20).until(
+			lambda d: d.execute_script("return document.readyState") == "complete"
 		)
-		
-		# Base64 이미지를 PIL Image로 변환
-		return Image.open(io.BytesIO(base64.b64decode(result["data"]))).convert('RGB')
+
+		# 2) 콘텐츠 전체 크기 측정 (body/documentElement 중 큰 값)
+		w = self.driver.execute_script("return Math.max(document.documentElement.clientWidth, window.innerWidth||0)")
+		h = self.driver.execute_script("return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)")
+
+		# 3) 창 크기 = 문서 높이(상한 적용). CDP 없이 윈도우만 키움
+		self.driver.set_window_size(int(w), int(min(h, self.MAX_H)))
+
+		# 4) 합성 2프레임 대기 후 표준 스크린샷
+		try:
+			self.driver.execute_async_script("const done = arguments[0]; requestAnimationFrame(()=>requestAnimationFrame(done));")
+		except:
+			time.sleep(0.1)
+
+		# 5) 스크린샷을 BytesIO로 변환
+		screenshot_bytes = self.driver.get_screenshot_as_png()
+		return Image.open(io.BytesIO(screenshot_bytes)).convert('RGB')
 
 	def capture_full_page_with_scroll(self, root_img: Image.Image, target_height: int) -> Image.Image:
-		# # 웹 네비게이션 설정
-		
-		self.navigate(self.BASE_URL)
-
-		# 브라우저 창 크기 조정
+			# 브라우저 창 크기 조정 (viewport 크기 조정)
 		self.resize_window(root_img.width, target_height)
 		
+		# 웹 네비게이션 설정
+		self.navigate(self.BASE_URL)
+
 		# scroll down to bottom
 		self.scroll_to_bottom()
 		self.scroll_to_top()
@@ -119,6 +147,7 @@ class WebNavigator:
 		time.sleep(1)
 		# 전체 페이지 캡처
 		web_img = self.capture_full_page()
+		
 		scale = web_img.width / root_img.width
 		web_img = web_img.resize((root_img.width, int(web_img.height / scale)))
 		# navigator.quit()

@@ -1,0 +1,19 @@
+# GENERAL ERROR
+G_ERROR_COORDINATE_X = 'X 좌표 오차'
+G_ERROR_COORDINATE_Y = 'Y좌표 오차'
+G_ERROR_SIZE = '크기 오차'
+G_ERROR_TEXT = '텍스트 오차'
+G_ERROR_NOT_MATCHED = '매칭 안됨'
+# ROUTE ERROR
+R_ERROR_ROUTING = '라우트 오차' 
+
+# INTERACTION ERROR
+I_ERROR_NAVIGATE_NOT_OVERLAY = '네비게이트 아닌 오버레이'
+
+I_ERROR_BACK_NOT_BACK = '백 아닌 경우 백'
+I_ERROR_OVERLAY_NOT_FOUND = '오버레이 없음'
+I_ERROR_DIFFERENT_OVERLAY = '다른 오버레이'
+
+I_ERROR_DIFFERENT_BACK = '다른 뒤로가기'
+
+NORMAL = '정상'  # 오차가 없는 경우

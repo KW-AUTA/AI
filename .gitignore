@@ -6,3 +6,10 @@ __pycache__/
 *.py[cod]
 static
 json_server
+profile_results.prof
+yolo/best.pt
+yolo/best_m.pt
+yolo/best_old.pt
+yolo/debug_*
+yolo/before
+yolo/core
