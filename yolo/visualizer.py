@@ -11,7 +11,7 @@ import time
 class Visualizer:
     """시각화를 담당하는 클래스"""
     @staticmethod
-    def visualize_boxes(img: Image.Image, boxes: np.ndarray, title: str = "Detected Boxes"):
+    def visualize_boxes(img: Image.Image, boxes: np.ndarray, title: str = "Detected Boxes", show: bool = True, save_only: bool = False, save_path: Optional[str] = None):
         """박스 시각화"""
         plt.figure(figsize=(20,10))
         plt.imshow(img)
@@ -23,11 +23,16 @@ class Visualizer:
                     bbox=dict(facecolor='black', alpha=0.5, pad=1))
         plt.title(title)
         plt.axis('off')
-        plt.show()
+        if show:
+            plt.show()
+        if save_path:
+            print(f"Saving image to {save_path}")
+            plt.savefig(save_path)
+        plt.close()
 
     @staticmethod
     def visualize_matches(figma_img: Image.Image, web_img: Image.Image, 
-                         matches: List[MatchResult], label: str):
+                         matches: List[MatchResult], label: str, show: bool = True, save_only: bool = False, save_path: Optional[str] = None):
         """매칭 결과 시각화 (두 이미지를 이어붙이고, 매칭된 박스 중심끼리 선 연결)"""
         if not matches:
             print("\n[실패] 매칭된 요소가 없습니다.")

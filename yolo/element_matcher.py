@@ -7,7 +7,7 @@ import torchvision.ops
 import torchvision.transforms as T
 from torchvision.transforms.functional import pad
 from ultralytics import YOLO
-import tesserocr
+from paddleocr import PaddleOCR, TextRecognition
 from difflib import SequenceMatcher
 from typing import List, Tuple, Optional, Any, Dict
 import cv2
@@ -89,21 +89,17 @@ from .models import (
 
 class ElementExtractor:
     """요소 매칭을 수행하는 클래스"""
-    def __init__(self, yolo_model_path: str = None, resize_size: Tuple[int, int] = (736, 736), debug_ocr: bool = False):
+    def __init__(self, yolo_model_path: str = None, resize_size: Tuple[int, int] = (736, 736), debug_ocr: bool = False, ocr_engine: str = "easyocr"):
         current_dir = os.path.dirname(__file__)
         if yolo_model_path is None:
             yolo_model_path = os.path.join(current_dir, "best_one.pt")
         self.yolo = YOLO(yolo_model_path, task='detect', verbose=False)
         self.resize_size = resize_size
         self.debug_ocr = debug_ocr  # OCR 전처리 디버그 모드
+        self.ocr_engine = ocr_engine  # "easyocr" or "paddleocr"
 
-        # tesserocr 설정
-        tessdata_dir = "/usr/local/share/tessdata"
-
-        self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
-        self.api.SetPageSegMode(tesserocr.PSM.SINGLE_BLOCK)
-        self.api.SetVariable("tessedit_char_whitelist", "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz가-힣 ")
-        # self.api.SetVariable("user_defined_dpi", "300")
+        # OCR lazy loading - 첫 사용 시 초기화
+        self._ocr = None
 
         self.transform = T.Compose([
             T.Resize(resize_size),
@@ -118,34 +114,37 @@ class ElementExtractor:
             os.makedirs(self.ocr_debug_dir, exist_ok=True)
             logging.info(f"OCR debug mode enabled. Results will be saved to: {self.ocr_debug_dir}")
 
-    def __del__(self):
-        """tesserocr API 정리"""
-        if hasattr(self, 'api'):
-            self.api.End()
+    @property
+    def ocr(self):
+        """OCR lazy initialization - PaddleOCR or EasyOCR"""
+        if self._ocr is None:
+            if self.ocr_engine == "paddleocr":
+                logging.info("PaddleOCR 설정 - korean_PP-OCRv5_mobile_rec 모델 사용")
+                try:
+                    from paddleocr import PaddleOCR
+                    self._ocr = PaddleOCR(
+                        text_recognition_model_name="korean_PP-OCRv5_mobile_rec",
+                        use_doc_orientation_classify=False,
+                        use_doc_unwarping=False,
+                        device="cpu"
+                    )
+                    logging.info("PaddleOCR 초기화 완료")
+                except Exception as e:
+                    logging.error(f"PaddleOCR 설정 오류: {e}")
+                    raise e
+            elif self.ocr_engine == "easyocr":
+                logging.info("EasyOCR 설정 - 한국어/영어 지원")
+                try:
+                    import easyocr
+                    self._ocr = easyocr.Reader(['ko', 'en'], gpu=False)
+                    logging.info("EasyOCR 초기화 완료")
+                except Exception as e:
+                    logging.error(f"EasyOCR 설정 오류: {e}")
+                    raise e
+            else:
+                raise ValueError(f"Unknown OCR engine: {self.ocr_engine}")
+        return self._ocr
 
-    def _pick_psm(self, w: int, h: int) -> int:
-        """ROI 크기/종횡비에 따라 최적화된 PSM 선택"""
-        if w == 0 or h == 0:
-            return tesserocr.PSM.SINGLE_BLOCK
-
-        aspect = w / max(1, h)
-        area = w * h
-
-        # 매우 작은 영역: 단일 문자나 숫자
-        if area < 20 * 20:
-            return tesserocr.PSM.SINGLE_CHAR
-        # 작은 영역: 단어 단위
-        elif area < 50 * 50:
-            return tesserocr.PSM.SINGLE_WORD
-        # 매우 가로로 긴 형태: 단일 라인
-        elif aspect >= 4.0:
-            return tesserocr.PSM.SINGLE_LINE
-        # 세로로 긴 형태나 중간 크기의 가로 긴 형태: 단일 라인
-        elif aspect <= 0.5 or aspect >= 2.0:
-            return tesserocr.PSM.SINGLE_LINE
-        # 기본: 단일 블록 처리
-        else:
-            return tesserocr.PSM.SINGLE_BLOCK
 
     def _preprocess_roi(
         self,
@@ -245,7 +244,7 @@ class ElementExtractor:
 
     def extract_text(self, img: Image.Image, box: np.ndarray, box_idx: int = None) -> str:
         """
-        OCR을 사용하여 이미지에서 텍스트 추출
+        OCR을 사용하여 이미지에서 텍스트 추출 (korean_PP-OCRv5_mobile_rec 모델 사용)
 
         Args:
             img: 전체 이미지
@@ -276,12 +275,33 @@ class ElementExtractor:
         if self.debug_ocr and box_idx is not None:
             self._save_ocr_preprocessing_debug(preprocessing_steps, box_idx, box)
 
-        # OCR 실행 (grayscale 이미지 사용)
-        gray_pil = Image.fromarray(gray)
-        self.api.SetImage(gray_pil)
-        text = self.api.GetUTF8Text()
+        # OCR 실행
+        text_list = []
+        if self.ocr_engine == "paddleocr":
+            # PaddleOCR 실행 (korean_PP-OCRv5_mobile_rec 모델)
+            result = self.ocr.ocr(img_np, cls=True)
 
-        # 후처리
+            if result is None or len(result) == 0 or result[0] is None:
+                return ""
+
+            # Extract text from OCR result
+            for line in result[0]:
+                if line and len(line) > 1:
+                    text_list.append(line[1][0])
+
+        elif self.ocr_engine == "easyocr":
+            # EasyOCR 실행
+            result = self.ocr.readtext(img_np)
+
+            if result is None or len(result) == 0:
+                return ""
+
+            # Extract text from OCR result
+            for detection in result:
+                if detection and len(detection) > 1:
+                    text_list.append(detection[1])
+
+        text = ' '.join(text_list)
         text = ' '.join(text.split())
         text = ''.join(c for c in text if c.isalnum() or c.isspace() or '\uAC00' <= c <= '\uD7A3')
 

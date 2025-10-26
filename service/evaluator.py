@@ -6,7 +6,10 @@ from pathlib import Path
 from PIL import ImageDraw, Image
 from io import BytesIO
 import requests
+from dotenv import load_dotenv
 from openai import OpenAI
+
+load_dotenv()
 
 from utils.figma import (
     extract_ui_elements,

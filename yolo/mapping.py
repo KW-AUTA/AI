@@ -142,7 +142,7 @@ def extract_elements(img: Image.Image, start_height: int, windowing_height: int,
         boxes, scores, cls, feat_map, original_img_size = matcher.detect_boxes_yolo(
             crop_img,
             extract_features=True,
-            use_multires=True
+            use_multires=False
         )
         if len(boxes) == 0:
             return None, None, None, None
@@ -1071,10 +1071,10 @@ def mapping(base_url: str, current_page: str, json_url: str, test_performance: b
         logging.info(f"Figma elements extracted: {len(figma_extracted)}")
         logging.info(f"Web elements extracted: {len(web_extracted)}")
 
-        visualizer.visualize_boxes(root_image, [f.box for f in figma_extracted], "Figma elements extracted")
+        visualizer.visualize_boxes(root_image, [f.box for f in figma_extracted], "Figma elements extracted", show=False, save_only=True, save_path="figma_elements_extracted.png")
 
         fare_figma = fare_figma_extracted(figma_tree, figma_extracted, figma_interactions)
-        visualizer.visualize_boxes(root_image, [f.extracted.box for f in fare_figma], "Figma elements extracted")
+        visualizer.visualize_boxes(root_image, [f.extracted.box for f in fare_figma], "Figma elements extracted", show=False, save_only=True, save_path="figma_elements_extracted_with_interaction.png")
         logging.info("finished figma elements extracting\n")
 
         logging.info(f"Web elements extracted: {len(web_extracted)}")
@@ -1146,7 +1146,7 @@ def mapping(base_url: str, current_page: str, json_url: str, test_performance: b
 
         # Combine matches
         matches = matches_interaction + matches_no_interaction
-        visualizer.visualize_matches(root_image, web_img, matches, "Matching Visualization")
+        visualizer.visualize_matches(root_image, web_img, matches, "Matching Visualization", show=False, save_only=True, save_path="matching_visualization.png")
         crops_dir = _save_match_crops(root_image, web_img, matches)
 
         # Save debug crops for all matches (conditional based on debug flag)
@@ -1214,33 +1214,6 @@ def quick_mp_vs_threading_comparison(base_url: str, json_url: str):
         'status': 'completed'
     }
 
-def quick_overhead_analysis(base_url: str, json_url: str):
-    """
-    빠른 오버헤드 분석 실행
-    """
-    logging.info("🔍 Starting quick overhead analysis...")
-    
-    # 기본 설정
-    target_height = 720
-    web_navigator = WebNavigator(headless=True, base_url=base_url)
-    matcher = ElementExtractor(resize_size=(736, 736))
-    
-    try:
-        # 이미지 준비
-        figma_raw, figma_interactions = load_figma_data(json_url)
-        root_image = get_img_by_id(figma_raw[0]['data']['id'], figma_raw)
-        web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
-        
-        # 오버헤드 분석 실행
-        overhead_results = test_overhead_optimization(root_image, web_img, matcher)
-        
-        return overhead_results
-        
-    finally:
-        if web_navigator.driver is not None:
-            web_navigator.quit()
-
-
 # 기존 mapping 함수에 오버헤드 분석 옵션 추가
 
 def extract_elements_multiprocessing_safe(figma_image: Image.Image, web_image: Image.Image, target_height: int = 720) -> Tuple[List[ExtractedElement], List[ExtractedElement]]:
@@ -1281,80 +1254,3 @@ def extract_elements_multiprocessing_safe(figma_image: Image.Image, web_image: I
     logging.info(f"🎯 SAFE Multiprocessing elements extraction completed: {end_time - start_time:.2f} seconds")
     
     return figma_extracted, web_extracted
-
-
-def test_gpu_lock_fix(figma_image: Image.Image, web_image: Image.Image, matcher: ElementExtractor) -> Dict[str, float]:
-    """
-    GPU 락 수정 전후 성능 비교 테스트
-    """
-    results = {}
-    target_height = 720
-    
-    # 1. 기존 멀티프로세싱 (GPU 락 발생 가능)
-    logging.info("🔬 Testing old multiprocessing (may have GPU lock)...")
-    start_time = time.time()
-    try:
-        figma_old, web_old = extract_elements_multiprocessing(figma_image, web_image, target_height)
-        old_mp_time = time.time() - start_time
-        results['old_multiprocessing'] = old_mp_time
-        logging.info(f"  Old multiprocessing: {old_mp_time:.2f}s")
-    except Exception as e:
-        old_mp_time = float('inf')
-        results['old_multiprocessing'] = old_mp_time
-        logging.warning(f"  Old multiprocessing failed: {e}")
-    
-    # 2. 새로운 안전한 멀티프로세싱 (CPU 모드)
-    logging.info("🔬 Testing new SAFE multiprocessing (CPU mode)...")
-    start_time = time.time()
-    figma_safe, web_safe = extract_elements_multiprocessing_safe(figma_image, web_image, target_height)
-    safe_mp_time = time.time() - start_time
-    results['safe_multiprocessing'] = safe_mp_time
-    logging.info(f"  Safe multiprocessing: {safe_mp_time:.2f}s")
-    
-    # 3. 순차 처리 비교
-    logging.info("🔬 Testing sequential processing...")
-    start_time = time.time()
-    figma_seq = extract_elements(figma_image, 0, target_height, matcher)
-    web_seq = extract_elements(web_image, 0, target_height, matcher)
-    sequential_time = time.time() - start_time
-    results['sequential'] = sequential_time
-    logging.info(f"  Sequential: {sequential_time:.2f}s")
-    
-    # 결과 분석
-    if results['old_multiprocessing'] != float('inf'):
-        improvement = results['old_multiprocessing'] / safe_mp_time
-        logging.info(f"📊 GPU Lock Fix Results:")
-        logging.info(f"  Old MP (with lock): {results['old_multiprocessing']:.2f}s")
-        logging.info(f"  Safe MP (CPU):      {safe_mp_time:.2f}s")
-        logging.info(f"  Improvement:        {improvement:.2f}x faster")
-    
-    safe_vs_sequential = sequential_time / safe_mp_time
-    logging.info(f"  Safe MP vs Sequential: {safe_vs_sequential:.2f}x speedup")
-    
-    return results
-
-def test_gpu_lock_fix_quick(base_url: str, json_url: str):
-    """
-    빠른 GPU 락 수정 테스트 실행
-    """
-    logging.info("🔍 Starting GPU lock fix test...")
-    
-    # 기본 설정
-    target_height = 720
-    web_navigator = WebNavigator(headless=True, base_url=base_url)
-    matcher = ElementExtractor(resize_size=(1024, 1024))
-    
-    try:
-        # 이미지 준비
-        figma_raw, figma_interactions = load_figma_data(json_url)
-        root_image = get_img_by_id(figma_raw[0]['data']['id'], figma_raw)
-        web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
-        
-        # GPU 락 수정 테스트 실행
-        lock_fix_results = test_gpu_lock_fix(root_image, web_img, matcher)
-        
-        return lock_fix_results
-        
-    finally:
-        if web_navigator.driver is not None:
-            web_navigator.quit()
