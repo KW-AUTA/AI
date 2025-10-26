@@ -35,6 +35,8 @@ class WebNavigatorConfig:
 
 
 class WebNavigator:
+	MAX_H = 16000  # 크롬/OS 한계 대비
+
 	"""
 	웹 네비게이션을 담당하는 클래스
 
@@ -213,23 +215,28 @@ class WebNavigator:
 	# ============================================================================
 
 	def capture_full_page(self) -> Image.Image:
-		"""
-		전체 페이지 스크린샷 캡처 (CDP 명령 사용)
-
-		Returns:
-			전체 페이지 스크린샷 이미지
-		"""
-		# CDP 명령으로 전체 페이지 스크린샷 캡처
-		result = self.driver.execute_cdp_cmd(
-			"Page.captureScreenshot",
-			{
-				"fromSurface": True,
-				"captureBeyondViewport": True
-			}
+		"""전체 페이지 스크린샷 캡처 (CDP 없이)"""
+		# 1) 페이지 로드 대기
+		WebDriverWait(self.driver, 20).until(
+			lambda d: d.execute_script("return document.readyState") == "complete"
 		)
 
-		# Base64 이미지를 PIL Image로 변환
-		return Image.open(io.BytesIO(base64.b64decode(result["data"]))).convert('RGB')
+		# 2) 콘텐츠 전체 크기 측정 (body/documentElement 중 큰 값)
+		w = self.driver.execute_script("return Math.max(document.documentElement.clientWidth, window.innerWidth||0)")
+		h = self.driver.execute_script("return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)")
+
+		# 3) 창 크기 = 문서 높이(상한 적용). CDP 없이 윈도우만 키움
+		self.driver.set_window_size(int(w), int(min(h, self.MAX_H)))
+
+		# 4) 합성 2프레임 대기 후 표준 스크린샷
+		try:
+			self.driver.execute_async_script("const done = arguments[0]; requestAnimationFrame(()=>requestAnimationFrame(done));")
+		except:
+			time.sleep(0.1)
+
+		# 5) 스크린샷을 BytesIO로 변환
+		screenshot_bytes = self.driver.get_screenshot_as_png()
+		return Image.open(io.BytesIO(screenshot_bytes)).convert('RGB')
 
 	def capture_full_page_with_scroll(
 		self,

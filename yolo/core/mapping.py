@@ -781,29 +781,33 @@ def dummy_worker(x):
 	"""오버헤드 측정용 더미 워커 함수"""
 	return x * 2
 
-@ray.remote
+@ray.remote(num_cpus=1)  # 각 Actor가 1개 CPU 사용
 class LegacyElementExtractorActor:
 	"""Ray Actor for element extraction with YOLO model"""
-	
+
 	def __init__(self):
 		try:
 			import torch
 			import os
-			
+
 			# GPU 사용 비활성화
 			torch.cuda.set_device(-1) if torch.cuda.is_available() else None
 			os.environ['CUDA_VISIBLE_DEVICES'] = ''
-			
+
 			logging.info("🔧 Initializing YOLO model in Ray actor (CPU mode)...")
 			self.matcher = LegacyElementExtractor(resize_size=(736, 736))
-			
+
 			# YOLO 모델을 CPU 모드로 강제 설정
 			self.matcher.yolo.model.to('cpu')
-			
+
 			logging.info("✅ YOLO model initialized in Ray actor (CPU mode)")
 		except Exception as e:
 			logging.error(f"❌ Error initializing Ray actor: {e}")
 			raise e
+
+	def warmup(self):
+		"""Actor 초기화 확인용 더미 메서드"""
+		return True
 	
 	def extract_elements_with_ocr(self, image_data, target_height, task_name, start_x=0, include_ocr=True):
 		"""Ray 원격 함수로 요소 추출 및 OCR"""
@@ -1024,13 +1028,19 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 	web_navigator = WebNavigator(config=nav_config)
 	visualizer = Visualizer()
 
-	# Ray 초기화
+	# Ray 초기화 (더 많은 워커를 위해 CPU 수 명시)
 	if not ray.is_initialized():
 		logging.info("🚀 Initializing Ray...")
+		# GPU 관련 경고 메시지 제거
+		import os
+		os.environ['RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO'] = '0'
+
 		ray.init(
-			num_cpus=None,  # 시스템 CPU 수 자동 감지
+			num_cpus=2,  # 4개 코어 활용
+			num_gpus=0,  # GPU 사용 안 함 (명시적 설정)
 			ignore_reinit_error=True,
-			log_to_driver=False  # Ray 로그를 줄임
+			log_to_driver=False,  # Ray 로그를 줄임
+			_temp_dir="/tmp/ray"  # Ray 임시 파일 위치 지정
 		)
 		logging.info("✅ Ray initialized successfully")
 	
@@ -1056,6 +1066,8 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		logging.info("Start Web page capturing...")
 		web_navigator.navigate(base_url)
 		web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
+		print(f"web_img.size: {web_img.size}")
+		web_img.save("web_img.png", format='PNG')
 		logging.info("finished web page capturing\n")
 
 		logging.info("Start Figma elements extracting...")
@@ -1069,8 +1081,8 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		logging.info(f"Figma elements extracted: {len(figma_extracted)}")
 		logging.info(f"Web elements extracted: {len(web_extracted)}")
 
-		visualizer.visualize_boxes(root_image, [f.box for f in figma_extracted], "Figma elements extracted")
-		visualizer.visualize_boxes(web_img, [e.box for e in web_extracted], "Web elements extracted")
+		visualizer.visualize_boxes(root_image, [f.box for f in figma_extracted], "Figma elements extracted", show=False, save=True, save_path="figma_elements_extracted.png")
+		visualizer.visualize_boxes(web_img, [e.box for e in web_extracted], "Web elements extracted", show=False, save=True, save_path="web_elements_extracted.png")
 
 		logging.info(f"Figma elements extracted: {len(figma_extracted)}")        
 		fare_figma = fare_figma_extracted(figma_tree, figma_extracted, figma_interactions)
@@ -1136,7 +1148,7 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 
 		# Combine matches
 		matches = matches_interaction + matches_no_interaction
-		visualizer.visualize_matches(root_image, web_img, matches, "Matching Visualization")
+		visualizer.visualize_matches(root_image, web_img, matches, "Matching Visualization", show=False, save=True, save_path="matching_visualization.png")
 
 		# Save per-match crops with scores for debugging
 		try:
@@ -1170,6 +1182,15 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		# Ray 정리
 		if ray.is_initialized():
 			logging.info("🔧 Shutting down Ray...")
+			# Actor 풀 정리
+			global _actor_pool
+			if _actor_pool is not None:
+				try:
+					ray.kill(_actor_pool['figma'])
+					ray.kill(_actor_pool['web'])
+				except:
+					pass
+				_actor_pool = None
 			ray.shutdown()
 			logging.info("✅ Ray shutdown completed")
 		
@@ -1178,50 +1199,69 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		stats.dump_stats('profile_results.prof')
 		logging.info("Profiling results saved to profile_results.prof")
 
-# 기존 mapping 함수에 오버헤드 분석 옵션 추가
+# 글로벌 Actor 풀 (재사용을 위해)
+_actor_pool = None
+
+def get_or_create_actor_pool():
+	"""Actor 풀 생성 또는 반환 (YOLO 모델을 미리 로드)"""
+	global _actor_pool
+	if _actor_pool is None:
+		logging.info("🔧 Creating Ray actor pool (2 actors)...")
+		start = time.time()
+
+		# 2개의 Actor 생성 (Figma용, Web용)
+		figma_actor = LegacyElementExtractorActor.remote()
+		web_actor = LegacyElementExtractorActor.remote()
+
+		# Actor 초기화 대기 (YOLO 모델 로딩 완료까지)
+		ray.get([figma_actor.warmup.remote(), web_actor.warmup.remote()])
+
+		_actor_pool = {'figma': figma_actor, 'web': web_actor}
+		elapsed = time.time() - start
+		logging.info(f"✅ Actor pool created and warmed up in {elapsed:.2f}s")
+
+	return _actor_pool
 
 def extract_elements_ray(figma_image: Image.Image, web_image: Image.Image, target_height: int = 540, start_x: int = 0, include_ocr: bool = True) -> Tuple[List[ExtractedElement], List[ExtractedElement]]:
 	"""
 	Ray를 사용한 요소 추출 및 OCR (분산 처리 버전)
+	Actor 재사용으로 YOLO 모델 재로딩 방지
 	"""
 	if include_ocr:
 		logging.info("🚀 Starting Ray distributed elements extraction + OCR...")
 	else:
 		logging.info("🚀 Starting Ray distributed elements extraction...")
-	
+
 	# 이미지를 bytes로 변환 (Ray 간 전달용)
 	import io
-	
+
 	# Figma 이미지를 bytes로 변환
 	figma_buffer = io.BytesIO()
 	figma_image.save(figma_buffer, format='PNG')
 	figma_data = figma_buffer.getvalue()
-	
+
 	# Web 이미지를 bytes로 변환
 	web_buffer = io.BytesIO()
 	web_image.save(web_buffer, format='PNG')
 	web_data = web_buffer.getvalue()
-	
+
 	# Ray를 사용한 분산 처리
 	start_time = time.time()
-	
-	# Ray actors 생성 (2개의 워커)
-	figma_actor = LegacyElementExtractorActor.remote()
-	web_actor = LegacyElementExtractorActor.remote()
-	
-	try:
-		# Figma와 Web 요소 추출을 동시에 실행
-		figma_future = figma_actor.extract_elements_with_ocr.remote(figma_data, target_height, "Figma", start_x, include_ocr)
-		web_future = web_actor.extract_elements_with_ocr.remote(web_data, target_height, "Web", start_x, include_ocr)
-		
-		# 결과 수집 (Ray.get으로 결과 대기)
-		figma_extracted, web_extracted = ray.get([figma_future, web_future])
-		
-	finally:
-		# Ray actors 정리
-		ray.kill(figma_actor)
-		ray.kill(web_actor)
-	
+
+	# Actor 풀 가져오기 (이미 초기화되어 있으면 재사용)
+	actors = get_or_create_actor_pool()
+	figma_actor = actors['figma']
+	web_actor = actors['web']
+
+	# Figma와 Web 요소 추출을 동시에 실행
+	figma_future = figma_actor.extract_elements_with_ocr.remote(figma_data, target_height, "Figma", start_x, include_ocr)
+	web_future = web_actor.extract_elements_with_ocr.remote(web_data, target_height, "Web", start_x, include_ocr)
+
+	# 결과 수집 (Ray.get으로 결과 대기)
+	figma_extracted, web_extracted = ray.get([figma_future, web_future])
+
+	# Actor는 kill하지 않고 재사용을 위해 유지
+
 	end_time = time.time()
 	if include_ocr:
 		logging.info(f"🎯 Ray distributed elements extraction + OCR completed: {end_time - start_time:.2f} seconds")

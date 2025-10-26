@@ -46,7 +46,10 @@ class Visualizer:
         self,
         img: Image.Image,
         boxes: np.ndarray,
-        title: str = "Detected Boxes"
+        title: str = "Detected Boxes",
+        show: bool = True,
+        save: bool = False,
+        save_path: str = None
     ) -> None:
         """
         이미지 위에 바운딩 박스를 시각화
@@ -56,7 +59,7 @@ class Visualizer:
             boxes: 바운딩 박스 배열 (N, 4) - [x1, y1, x2, y2]
             title: 플롯 제목
         """
-        plt.figure(figsize=(self.config.figure_width, self.config.figure_height))
+        # plt.figure(figsize=(self.config.figure_width, self.config.figure_height))
         plt.imshow(img)
 
         for box in boxes:
@@ -83,7 +86,13 @@ class Visualizer:
 
         plt.title(title)
         plt.axis('off')
-        plt.show()
+        if save:
+            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            plt.close()
+        if show:
+            plt.show()
+        else:
+            plt.close()
 
     def visualize_matches(
         self,
@@ -91,7 +100,10 @@ class Visualizer:
         web_img: Image.Image,
         matches: List[MatchResult],
         label: str = "",
-        show_error_categories: bool = False
+        show_error_categories: bool = False,
+        show: bool = True,
+        save: bool = False,
+        save_path: str = None
     ) -> None:
         """
         매칭 결과 시각화 (두 이미지를 이어붙이고, 매칭된 박스 중심끼리 선 연결)
@@ -133,7 +145,10 @@ class Visualizer:
             label,
             show_error_categories,
             matches,
-            len(matches)
+            len(matches),
+            save=save,
+            show=show,
+            save_path=save_path
         )
 
     def visualize_matches_with_error(
@@ -271,7 +286,10 @@ class Visualizer:
         label: str,
         show_error_categories: bool,
         matches: List[MatchResult],
-        match_count: int
+        match_count: int,
+        save: bool = False,
+        show: bool = True,
+        save_path: str = None
     ) -> None:
         """
         시각화 결과를 matplotlib으로 표시
@@ -282,10 +300,13 @@ class Visualizer:
             show_error_categories: 에러 카테고리 표시 여부
             matches: 매칭 결과 리스트
             match_count: 매칭된 요소 개수
+            save: 저장 여부
+            show: 표시 여부
+            save_path: 저장 경로
         """
         overlay_rgb = cv2.cvtColor(overlay.astype(np.uint8), cv2.COLOR_BGR2RGB)
 
-        plt.figure(figsize=(self.config.figure_width, self.config.figure_height))
+        # plt.figure(figsize=(self.config.figure_width, self.config.figure_height))
         plt.imshow(overlay_rgb)
         plt.axis('off')
 
@@ -296,7 +317,13 @@ class Visualizer:
         else:
             plt.title(f'Matching Visualization {label}')
 
-        plt.show()
+        if save:
+            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            plt.close()
+        if show:
+            plt.show()
+        else:
+            plt.close()
         print(f"\n[완료] 총 {match_count}개의 요소가 매칭되었습니다.")
 
 

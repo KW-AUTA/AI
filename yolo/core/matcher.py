@@ -554,7 +554,10 @@ class SimilarityMatcher:
             # 텍스트 존재 여부 확인
             figma_text = getattr(figma_elements[figma_idx].extracted, 'text', '') or ''
             web_text = getattr(web_elements[web_idx], 'text', '') or ''
-            both_have_text = bool(figma_text.strip()) and bool(web_text.strip())
+            figma_has_text = bool(figma_text.strip())
+            web_has_text = bool(web_text.strip())
+            both_have_text = figma_has_text and web_has_text
+            both_no_text = not figma_has_text and not web_has_text
 
             # 1. 크기 유사도 체크 (모든 경우)
             if size_sim < MIN_SIZE_SIMILARITY:
@@ -566,17 +569,49 @@ class SimilarityMatcher:
                 self.logger.info(f"✗ Rejected by text: figma='{figma_text[:30]}' web='{web_text[:30]}' text_sim={text_sim:.2f}")
                 continue
 
-            # 3. XOR 케이스: 한쪽만 텍스트가 있는 경우 (OCR 실패 보호)
-            figma_has = bool(figma_text.strip())
-            web_has = bool(web_text.strip())
-            if figma_has ^ web_has:  # XOR: 한쪽만 True
-                longer_text = figma_text if figma_has else web_text
-                MIN_FEAT_SIM_XOR = float(os.environ.get('MIN_FEAT_SIM_XOR', '0.85'))
+            # 3. XOR 케이스: 한쪽만 텍스트가 있는 경우 - 거부
+            # 텍스트 요소와 비텍스트 요소는 매칭되면 안됨
+            if figma_has_text ^ web_has_text:  # XOR: 한쪽만 True
+                longer_text = figma_text if figma_has_text else web_text
+                self.logger.info(f"✗ Rejected by text/non-text mismatch: figma_text='{figma_text[:30]}' web_text='{web_text[:30]}'")
+                continue
 
-                # 텍스트가 3글자 이상이고 feature 유사도가 낮으면 거부
-                if len(longer_text.strip()) >= 3 and feat_sim < MIN_FEAT_SIM_XOR:
-                    self.logger.info(f"✗ Rejected by XOR text: one_side_text='{longer_text[:30]}' feat_sim={feat_sim:.2f} (< {MIN_FEAT_SIM_XOR})")
+            # 4. 텍스트 길이 차이 체크 (둘 다 텍스트가 있는 경우)
+            if both_have_text:
+                figma_len = len(figma_text.strip())
+                web_len = len(web_text.strip())
+
+                # 0으로 나누기 방지
+                max_len = max(figma_len, web_len, 1)
+                min_len = min(figma_len, web_len)
+                len_ratio = min_len / max_len
+
+                MIN_TEXT_LENGTH_RATIO = float(os.environ.get('MIN_TEXT_LEN_RATIO', '0.5'))
+
+                # 텍스트 길이 차이가 너무 크면 거부 (예: "Login" vs "L")
+                if len_ratio < MIN_TEXT_LENGTH_RATIO:
+                    self.logger.info(f"✗ Rejected by text length: figma='{figma_text[:30]}'({figma_len}) web='{web_text[:30]}'({web_len}) ratio={len_ratio:.2f}")
                     continue
+
+            # 5. 종횡비(aspect ratio) 하드 제약
+            figma_box = figma_elements[figma_idx].extracted.box
+            web_box = web_elements[web_idx].box
+
+            figma_w = figma_box[2] - figma_box[0]
+            figma_h = figma_box[3] - figma_box[1]
+            web_w = web_box[2] - web_box[0]
+            web_h = web_box[3] - web_box[1]
+
+            figma_aspect = figma_w / max(figma_h, 1)
+            web_aspect = web_w / max(web_h, 1)
+
+            aspect_ratio = min(figma_aspect, web_aspect) / max(figma_aspect, web_aspect, 0.01)
+            MIN_ASPECT_RATIO = float(os.environ.get('MIN_ASPECT_RATIO', '0.6'))
+
+            # 종횡비 차이가 너무 크면 거부 (예: 정사각형 아이콘 vs 긴 버튼)
+            if aspect_ratio < MIN_ASPECT_RATIO:
+                self.logger.info(f"✗ Rejected by aspect ratio: figma={figma_aspect:.2f} web={web_aspect:.2f} ratio={aspect_ratio:.2f}")
+                continue
 
             # 디버그: 매칭 승인 로그
             if both_have_text:

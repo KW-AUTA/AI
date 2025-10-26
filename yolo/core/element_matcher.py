@@ -195,7 +195,7 @@ class ElementExtractor:
 				if tessdata_dir is None:
 						raise RuntimeError("❌ Tesseract tessdata를 찾을 수 없습니다. 설치 확인 필요.")
 
-				self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor+eng')
+				self.api = tesserocr.PyTessBaseAPI(path=tessdata_dir, lang='kor')
 				self.api.SetVariable("user_defined_dpi", "300")
 				self.api.SetVariable("tessedit_char_blacklist", "")
 				self.api.SetVariable("preserve_interword_spaces", "1")
