@@ -27,17 +27,19 @@ if _USE_PADDLE:
 		import logging
 		logging.getLogger('ppocr').setLevel(logging.ERROR)
 		_PADDLE_IMPORTED = True
-		print(f"✓ PaddlePaddle {paddle_version} pre-loaded (before PyTorch)")
+		import logging
+		logging.info(f"PaddlePaddle {paddle_version} loaded")
 	except Exception as e:
 		_PADDLE_IMPORTED = False
-		print(f"⚠️ PaddlePaddle pre-load failed: {e}")
+		import logging
+		logging.warning(f"PaddlePaddle load failed: {e}")
 
 # PyTorch는 PaddlePaddle 이후에 import
 import torch
 import torch.nn.functional as F
 import torchvision.ops
 import torchvision.transforms as T
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageEnhance
 from scipy.optimize import linear_sum_assignment
 from difflib import SequenceMatcher
 from typing import List, Tuple, Optional, Dict
@@ -48,6 +50,51 @@ from .models import FigmaFare, ExtractedElement, MatchResult
 from .paddle_ocr_helper import PaddleOCRHelper
 from ..utils.errorChecker import ErrorChecker
 from ..utils.error_list import *
+
+# Logger 설정 (색상 + 박스 + 모듈명)
+import logging
+import sys
+
+class ColoredFormatter(logging.Formatter):
+	"""색상과 박스 문자를 사용한 로그 포매터"""
+
+	# ANSI 색상 코드
+	COLORS = {
+		'DEBUG': '\033[36m',    # Cyan
+		'INFO': '\033[32m',     # Green
+		'WARNING': '\033[33m',  # Yellow
+		'ERROR': '\033[31m',    # Red
+		'CRITICAL': '\033[35m', # Magenta
+	}
+	RESET = '\033[0m'
+	BOLD = '\033[1m'
+
+	# 박스 문자
+	ICONS = {
+		'DEBUG': '🔍',
+		'INFO': '✓',
+		'WARNING': '⚠',
+		'ERROR': '✗',
+		'CRITICAL': '🔥',
+	}
+
+	def format(self, record):
+		levelname = record.levelname
+		color = self.COLORS.get(levelname, '')
+		icon = self.ICONS.get(levelname, '•')
+		module = record.name.split('.')[-1]  # 모듈명만 (예: element_matcher)
+
+		# 형식: [아이콘 레벨] 모듈 | 메시지
+		log_fmt = f"{color}{self.BOLD}[{icon} {levelname:8s}]{self.RESET} {color}{module:20s}{self.RESET} │ {record.getMessage()}"
+		return log_fmt
+
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+	handler = logging.StreamHandler(sys.stdout)
+	handler.setFormatter(ColoredFormatter())
+	logger.addHandler(handler)
+	logger.setLevel(logging.INFO)
+	logger.propagate = False  # 중복 방지
 
 
 # ============================================================================
@@ -182,9 +229,9 @@ class ElementExtractor:
 				self.paddle_helper = PaddleOCRHelper()
 				self.api = None
 				self.paddle_ocr = None
-				print("✓ PaddleOCR Helper 초기화 성공 (subprocess 기반)")
+				logger.info("PaddleOCR Helper initialized (subprocess)")
 			except Exception as e:
-				print(f"⚠️ PaddleOCR Helper 초기화 실패, Tesseract로 폴백: {e}")
+				logger.warning(f"PaddleOCR Helper init failed, fallback to Tesseract: {e}")
 				self.use_paddleocr = False
 				possible_paths = [
 						"/usr/share/tesseract-ocr/5/tessdata",
@@ -440,7 +487,7 @@ class ElementExtractor:
 			self.api.SetVariable("tessedit_enable_bigram_correction", "1")
 			self.api.SetVariable("classify_enable_learning", "1")
 		except Exception as e:
-			print(f"Warning: Failed to set OCR parameters: {e}")
+			logger.warning(f"Failed to set OCR parameters: {e}")
 
 		# OCR 실행
 		self.api.SetImage(binary_pil)
@@ -561,24 +608,365 @@ class ElementExtractor:
 	# YOLO Detection Methods
 	# ========================================================================
 
+	# 클래스 레벨에서 실행 ID 관리
+	_debug_run_id = None
+
+	@classmethod
+	def _get_or_create_run_id(cls):
+		"""실행 ID를 가져오거나 생성 (동일 실행 내에서 공유)"""
+		if cls._debug_run_id is None:
+			import time
+			cls._debug_run_id = time.strftime("run_%Y%m%d_%H%M%S")
+		return cls._debug_run_id
+
+	def _apply_preprocessing(
+		self,
+		pil_img: Image.Image,
+		mode: str,
+		save_debug: bool = False,
+		debug_dir: str = None
+	) -> Image.Image:
+		"""
+		전처리 적용
+
+		Args:
+			pil_img: 입력 이미지
+			mode: 전처리 모드
+				- "default": 기본 샤프닝만
+				- "clahe": CLAHE 대비 향상
+				- "bilateral": Bilateral 필터 (엣지 보존 노이즈 제거)
+				- "clahe_bilateral": CLAHE + Bilateral 조합
+				- "gamma": Gamma 보정
+				- "adaptive": Adaptive Histogram Equalization
+				- "all": 모든 방법 적용
+
+		Returns:
+			전처리된 이미지
+		"""
+		# 전처리 시작 로그
+		logger.info(f"Applying preprocessing mode: '{mode}'")
+
+		if save_debug and debug_dir:
+			with open(os.path.join(debug_dir, 'preprocess.log'), 'a') as f:
+				f.write(f"Applying preprocessing mode: '{mode}'\n")
+
+		img_np = np.array(pil_img)
+		step = 2
+
+		if mode == "default":
+			# 기본: 샤프닝만
+			result = pil_img.filter(ImageFilter.UnsharpMask(radius=2, percent=200, threshold=1))
+			if save_debug and debug_dir:
+				result.save(os.path.join(debug_dir, f'{step}_sharpened.png'))
+				logger.debug(f"Saved: {step}_sharpened.png")
+			return result
+
+		elif mode == "clahe":
+			# CLAHE (대비 향상)
+			if len(img_np.shape) == 3:
+				gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+			else:
+				gray = img_np
+
+			clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+			enhanced = clahe.apply(gray)
+
+			if save_debug and debug_dir:
+				Image.fromarray(enhanced).save(os.path.join(debug_dir, f'{step}_clahe.png'))
+				logger.debug(f"Saved: {step}_clahe.png")
+
+			# 다시 RGB로 변환
+			if len(img_np.shape) == 3:
+				enhanced_rgb = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+			else:
+				enhanced_rgb = enhanced
+
+			# 샤프닝 추가
+			result = Image.fromarray(enhanced_rgb).filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=1))
+			if save_debug and debug_dir:
+				result.save(os.path.join(debug_dir, f'{step+1}_clahe_sharpened.png'))
+				logger.debug(f"Saved: {step+1}_clahe_sharpened.png")
+
+			return result
+
+		elif mode == "bilateral":
+			# Bilateral 필터 (엣지 보존)
+			bilateral = cv2.bilateralFilter(img_np, 9, 75, 75)
+
+			if save_debug and debug_dir:
+				Image.fromarray(bilateral).save(os.path.join(debug_dir, f'{step}_bilateral.png'))
+				logger.debug(f"Saved: {step}_bilateral.png")
+
+			# 샤프닝 추가
+			result = Image.fromarray(bilateral).filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=1))
+			if save_debug and debug_dir:
+				result.save(os.path.join(debug_dir, f'{step+1}_bilateral_sharpened.png'))
+				logger.debug(f"Saved: {step+1}_bilateral_sharpened.png")
+
+			return result
+
+		elif mode == "clahe_bilateral":
+			# CLAHE + Bilateral 조합 (최고 품질)
+			if len(img_np.shape) == 3:
+				gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+			else:
+				gray = img_np
+
+			# 1. CLAHE
+			clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+			enhanced = clahe.apply(gray)
+
+			if save_debug and debug_dir:
+				Image.fromarray(enhanced).save(os.path.join(debug_dir, f'{step}_clahe.png'))
+				logger.debug(f"Saved: {step}_clahe.png")
+				step += 1
+
+			# 2. Bilateral
+			if len(img_np.shape) == 3:
+				enhanced_rgb = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+			else:
+				enhanced_rgb = enhanced
+
+			bilateral = cv2.bilateralFilter(enhanced_rgb, 9, 75, 75)
+
+			if save_debug and debug_dir:
+				Image.fromarray(bilateral).save(os.path.join(debug_dir, f'{step}_bilateral.png'))
+				logger.debug(f"Saved: {step}_bilateral.png")
+				step += 1
+
+			# 3. 샤프닝
+			result = Image.fromarray(bilateral).filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=1))
+			if save_debug and debug_dir:
+				result.save(os.path.join(debug_dir, f'{step}_sharpened.png'))
+				logger.debug(f"Saved: {step}_sharpened.png")
+
+			return result
+
+		elif mode == "gamma":
+			# Gamma 보정
+			gamma = 1.2
+			inv_gamma = 1.0 / gamma
+			table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+			gamma_corrected = cv2.LUT(img_np, table)
+
+			if save_debug and debug_dir:
+				Image.fromarray(gamma_corrected).save(os.path.join(debug_dir, f'{step}_gamma.png'))
+				logger.debug(f"Saved: {step}_gamma.png")
+				step += 1
+
+			# 샤프닝 추가
+			result = Image.fromarray(gamma_corrected).filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=1))
+			if save_debug and debug_dir:
+				result.save(os.path.join(debug_dir, f'{step}_gamma_sharpened.png'))
+				logger.debug(f"Saved: {step}_gamma_sharpened.png")
+
+			return result
+
+		elif mode == "adaptive":
+			# Adaptive Histogram Equalization
+			if len(img_np.shape) == 3:
+				# YUV 변환 후 Y 채널에만 적용
+				yuv = cv2.cvtColor(img_np, cv2.COLOR_RGB2YUV)
+				yuv[:, :, 0] = cv2.equalizeHist(yuv[:, :, 0])
+				enhanced = cv2.cvtColor(yuv, cv2.COLOR_YUV2RGB)
+			else:
+				enhanced = cv2.equalizeHist(img_np)
+
+			if save_debug and debug_dir:
+				Image.fromarray(enhanced).save(os.path.join(debug_dir, f'{step}_adaptive.png'))
+				logger.debug(f"Saved: {step}_adaptive.png")
+				step += 1
+
+			# 샤프닝 추가
+			result = Image.fromarray(enhanced).filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=1))
+			if save_debug and debug_dir:
+				result.save(os.path.join(debug_dir, f'{step}_adaptive_sharpened.png'))
+				logger.debug(f"Saved: {step}_adaptive_sharpened.png")
+
+			return result
+
+		elif mode == "all":
+			# 모든 전처리 방법 적용 (디버그용)
+			logger.info("Applying all preprocessing methods for comparison")
+
+			if len(img_np.shape) == 3:
+				gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+			else:
+				gray = img_np
+
+			# 1. Default (샤프닝만)
+			default_result = pil_img.filter(ImageFilter.UnsharpMask(radius=2, percent=200, threshold=1))
+			if save_debug and debug_dir:
+				default_result.save(os.path.join(debug_dir, f'{step}_default_sharpened.png'))
+				logger.debug(f"Saved: {step}_default_sharpened.png")
+				step += 1
+
+			# 2. CLAHE
+			clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+			clahe_result = clahe.apply(gray)
+			if save_debug and debug_dir:
+				Image.fromarray(clahe_result).save(os.path.join(debug_dir, f'{step}_clahe.png'))
+				logger.debug(f"Saved: {step}_clahe.png")
+				step += 1
+
+			# 3. Bilateral
+			bilateral_result = cv2.bilateralFilter(img_np, 9, 75, 75)
+			if save_debug and debug_dir:
+				Image.fromarray(bilateral_result).save(os.path.join(debug_dir, f'{step}_bilateral.png'))
+				logger.debug(f"Saved: {step}_bilateral.png")
+				step += 1
+
+			# 4. CLAHE + Bilateral (최종 사용)
+			clahe_rgb = cv2.cvtColor(clahe_result, cv2.COLOR_GRAY2RGB) if len(img_np.shape) == 3 else clahe_result
+			clahe_bilateral = cv2.bilateralFilter(clahe_rgb, 9, 75, 75)
+			if save_debug and debug_dir:
+				Image.fromarray(clahe_bilateral).save(os.path.join(debug_dir, f'{step}_clahe_bilateral.png'))
+				logger.debug(f"Saved: {step}_clahe_bilateral.png")
+				step += 1
+
+			# 5. Gamma
+			gamma = 1.2
+			inv_gamma = 1.0 / gamma
+			table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+			gamma_result = cv2.LUT(img_np, table)
+			if save_debug and debug_dir:
+				Image.fromarray(gamma_result).save(os.path.join(debug_dir, f'{step}_gamma.png'))
+				logger.debug(f"Saved: {step}_gamma.png")
+				step += 1
+
+			# 6. Adaptive
+			if len(img_np.shape) == 3:
+				yuv = cv2.cvtColor(img_np, cv2.COLOR_RGB2YUV)
+				yuv[:, :, 0] = cv2.equalizeHist(yuv[:, :, 0])
+				adaptive_result = cv2.cvtColor(yuv, cv2.COLOR_YUV2RGB)
+			else:
+				adaptive_result = cv2.equalizeHist(img_np)
+			if save_debug and debug_dir:
+				Image.fromarray(adaptive_result).save(os.path.join(debug_dir, f'{step}_adaptive.png'))
+				logger.debug(f"Saved: {step}_adaptive.png")
+
+			logger.info("All preprocessing methods saved")
+			logger.info("Using Adaptive for detection")
+
+			# 최종: Adaptive 사용 (RGB 버전)
+			return Image.fromarray(adaptive_result)
+
+		else:
+			# 알 수 없는 모드: 기본값 사용
+			logger.warning(f"Unknown preprocess mode '{mode}', using default")
+			return pil_img.filter(ImageFilter.UnsharpMask(radius=2, percent=200, threshold=1))
+
 	def detect_boxes_yolo(
 		self,
 		pil_img: Image.Image,
 		conf_thresh: float = 0.05,
 		max_det: int = 500,
-		extract_features: bool = False
+		extract_features: bool = False,
+		save_preprocessing: bool = None,
+		save_path: str = None,
+		window_id: str = None,
+		image_type: str = None
 	):
-		"""YOLO를 사용한 박스 검출"""
+		"""YOLO를 사용한 박스 검출
+
+		Args:
+			pil_img: 입력 이미지
+			conf_thresh: Confidence threshold
+			max_det: 최대 검출 개수
+			extract_features: 특징 추출 여부
+			save_preprocessing: 전처리 과정 저장 여부 (None이면 환경변수 확인)
+			save_path: 저장 경로 (None이면 자동 생성)
+			window_id: 윈도우 식별자 (예: "window_1_large", "window_2_small")
+			image_type: 이미지 타입 (예: "figma", "web")
+		"""
 		orig_w, orig_h = pil_img.size
 		resize_size = self.resize_size
 
-		# 샤프닝
-		pil_img = pil_img.filter(
-			ImageFilter.UnsharpMask(radius=2, percent=200, threshold=1)
+		# 환경변수로 디버그 모드 확인
+		if save_preprocessing is None:
+			save_preprocessing = os.environ.get('DEBUG_PREPROCESSING', 'false').lower() in ('true', '1', 'yes')
+
+		# 전처리 과정 저장을 위한 디버그 모드
+		if save_preprocessing:
+			# 실행 ID로 묶인 폴더 구조: debug_preprocessing/run_20250101_120000/figma_window_001_h0000/
+			run_id = self._get_or_create_run_id()
+			base_debug_dir = save_path or os.path.join(os.path.dirname(__file__), 'debug_preprocessing', run_id)
+
+			# 윈도우별 폴더 생성 (이미지 타입 포함)
+			if window_id:
+				if image_type:
+					debug_dir = os.path.join(base_debug_dir, f"{image_type}_{window_id}")
+				else:
+					debug_dir = os.path.join(base_debug_dir, window_id)
+			else:
+				import time
+				timestamp = time.strftime("%H%M%S_%f")
+				type_prefix = f"{image_type}_" if image_type else ""
+				debug_dir = os.path.join(base_debug_dir, f"{type_prefix}window_{timestamp}")
+
+			os.makedirs(debug_dir, exist_ok=True)
+
+			# 원본 저장
+			pil_img.save(os.path.join(debug_dir, '1_original.png'))
+			logger.debug(f"Saved original image to {debug_dir}/1_original.png")
+
+		# 전처리 모드 확인 (환경변수)
+		preprocess_mode = os.environ.get('PREPROCESS_MODE', 'default').lower()
+
+		# 로깅 (깔끔하게 정리)
+		import sys
+
+		# 로그 메시지 구성
+		log_lines = [
+			"",
+			"╔" + "═" * 78 + "╗",
+			"║ 🔍 YOLO DETECTION START" + " " * 53 + "║",
+			"╠" + "═" * 78 + "╣",
+			f"║ 📐 Image Size   : {orig_w:4d} x {orig_h:4d}" + " " * (78 - len(f"║ 📐 Image Size   : {orig_w:4d} x {orig_h:4d}")) + "║",
+			f"║ 🎨 Preprocess   : {preprocess_mode:<20}" + " " * (78 - len(f"║ 🎨 Preprocess   : {preprocess_mode:<20}")) + "║",
+			f"║ 🐛 Debug Mode   : {str(save_preprocessing):<20}" + " " * (78 - len(f"║ 🐛 Debug Mode   : {str(save_preprocessing):<20}")) + "║",
+		]
+
+		if window_id:
+			log_lines.append(f"║ 🪟 Window ID    : {window_id:<20}" + " " * (78 - len(f"║ 🪟 Window ID    : {window_id:<20}")) + "║")
+		if image_type:
+			log_lines.append(f"║ 🏷️  Image Type   : {image_type:<20}" + " " * (78 - len(f"║ 🏷️  Image Type   : {image_type:<20}")) + "║")
+
+		log_lines.append("╚" + "═" * 78 + "╝")
+
+		# 출력
+		log_text = "\n".join(log_lines)
+		sys.stdout.write(log_text + "\n")
+		sys.stdout.flush()
+		logger.info(f"YOLO Detection - Size:{orig_w}x{orig_h}, Mode:{preprocess_mode}, Type:{image_type or 'N/A'}")
+
+		# 파일로도 저장 (디버그용)
+		if save_preprocessing and debug_dir:
+			log_file = os.path.join(debug_dir, 'preprocess.log')
+			with open(log_file, 'a') as f:
+				f.write(log_text + "\n")
+
+		pil_img_processed = self._apply_preprocessing(
+			pil_img,
+			preprocess_mode,
+			save_preprocessing,
+			debug_dir if save_preprocessing else None
 		)
 
+		# 완료 로그
+		logger.info(f"Preprocessing completed: {preprocess_mode}")
+
+		if save_preprocessing and debug_dir:
+			with open(os.path.join(debug_dir, 'preprocess.log'), 'a') as f:
+				f.write(f"Preprocessing completed: {preprocess_mode}\n")
+
 		# 리사이즈
-		img_resized = pil_img.resize(resize_size, Image.Resampling.LANCZOS)
+		img_resized = pil_img_processed.resize(resize_size, Image.Resampling.LANCZOS)
+
+		if save_preprocessing:
+			img_resized.save(os.path.join(debug_dir, '9_final_resized.png'))
+			logger.debug(f"Saved final resized image to {debug_dir}/9_final_resized.png")
+
 		img_np = np.array(img_resized)
 
 		# BGR, float32, [0-1]
@@ -1204,4 +1592,4 @@ class ElementExtractor:
 			except Exception:
 				pass
 		except Exception as e:
-			print(f"Warning: Failed to save debug plots: {e}")
+			logger.warning(f"Failed to save debug plots: {e}")

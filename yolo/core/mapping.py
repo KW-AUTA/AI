@@ -28,8 +28,49 @@ import io
 from torchvision import transforms
 from ..utils.error_list import *
 import ray
-# 로깅 설정	
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import sys
+
+# 로깅 설정 (색상 + 박스 + 모듈명)
+class ColoredFormatter(logging.Formatter):
+	"""색상과 박스 문자를 사용한 로그 포매터"""
+
+	# ANSI 색상 코드
+	COLORS = {
+		'DEBUG': '\033[36m',    # Cyan
+		'INFO': '\033[32m',     # Green
+		'WARNING': '\033[33m',  # Yellow
+		'ERROR': '\033[31m',    # Red
+		'CRITICAL': '\033[35m', # Magenta
+	}
+	RESET = '\033[0m'
+	BOLD = '\033[1m'
+
+	# 박스 문자
+	ICONS = {
+		'DEBUG': '🔍',
+		'INFO': '✓',
+		'WARNING': '⚠',
+		'ERROR': '✗',
+		'CRITICAL': '🔥',
+	}
+
+	def format(self, record):
+		levelname = record.levelname
+		color = self.COLORS.get(levelname, '')
+		icon = self.ICONS.get(levelname, '•')
+		module = record.name.split('.')[-1]  # 모듈명만
+
+		# 형식: [아이콘 레벨] 모듈 | 메시지
+		log_fmt = f"{color}{self.BOLD}[{icon} {levelname:8s}]{self.RESET} {color}{module:20s}{self.RESET} │ {record.getMessage()}"
+		return log_fmt
+
+# 루트 로거에 ColoredFormatter 적용
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+	handler = logging.StreamHandler(sys.stdout)
+	handler.setFormatter(ColoredFormatter())
+	logger.addHandler(handler)
 
 # Import non_max_suppression from element_matcher
 
@@ -168,8 +209,8 @@ def get_start_x(tree: TreeNode) -> int:
 	manager = TreeManager.from_tree_node(tree)
 	return int(manager.get_min_render_x())
 
-def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matcher: LegacyElementExtractor, iou_threshold: float = 0.5, 
-					speed_mode: str = "balanced") -> List[ExtractedElement]:
+def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matcher: LegacyElementExtractor, iou_threshold: float = 0.5,
+					speed_mode: str = "balanced", image_type: str = None) -> List[ExtractedElement]:
 	"""이미지에서 요소 추출 (최적화된 슬라이딩 윈도우 버전)
 	
 	speed_mode 옵션:
@@ -247,10 +288,54 @@ def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matc
 	all_cls = []
 	all_features = []
 
+	# 디버그 모드 확인
+	debug_preprocessing = os.environ.get('DEBUG_PREPROCESSING', 'false').lower() in ('true', '1', 'yes')
+	preprocess_mode = os.environ.get('PREPROCESS_MODE', 'default').lower()
+	window_counter = [0]  # 리스트로 감싸서 nested function에서 수정 가능하게
+
+	# 깔끔한 로그 출력
+	import sys
+	log_box = [
+		"",
+		"┌" + "─" * 78 + "┐",
+		"│ 🚀 ELEMENT EXTRACTION START" + " " * 49 + "│",
+		"├" + "─" * 78 + "┤",
+		f"│ 🏷️  Image Type      : {(image_type or 'unknown'):<20}" + " " * (78 - len(f"│ 🏷️  Image Type      : {(image_type or 'unknown'):<20}")) + "│",
+		f"│ 🖼️  Image Size      : {img.width:4d} x {img.height:4d}" + " " * (78 - len(f"│ ��️  Image Size      : {img.width:4d} x {img.height:4d}")) + "│",
+		f"│ 🪟 Total Windows   : {len(windows_to_process):<4}" + " " * (78 - len(f"│ 🪟 Total Windows   : {len(windows_to_process):<4}")) + "│",
+		f"│ 🎨 Preprocess Mode : {preprocess_mode:<20}" + " " * (78 - len(f"│ 🎨 Preprocess Mode : {preprocess_mode:<20}")) + "│",
+		f"│ 🐛 Debug Mode      : {str(debug_preprocessing):<20}" + " " * (78 - len(f"│ 🐛 Debug Mode      : {str(debug_preprocessing):<20}")) + "│",
+		"└" + "─" * 78 + "┘",
+		""
+	]
+
+	log_text = "\n".join(log_box)
+	sys.stdout.write(log_text)
+	sys.stdout.flush()
+
+	logging.info(f"Element Extraction Start - Type:{image_type or 'unknown'}, Windows:{len(windows_to_process)}, Mode:{preprocess_mode}")
+
 	# 각 창에 대해 순차적으로 탐지 및 특징 추출 수행
 	def process_window(crop_img, original_height):
 		# 1. 탐지 및 특징 추출을 한 번에 수행
-		boxes, scores, cls, feat_map, original_img_size = matcher.detect_boxes_yolo(crop_img, extract_features=True)
+		window_counter[0] += 1
+		# original_height를 정수로 변환 (numpy 타입일 수 있음)
+		h_int = int(original_height)
+		window_id = f"window_{window_counter[0]:03d}_h{h_int:04d}" if debug_preprocessing else None
+
+		# 진행률 표시
+		progress = f"  ⏳ [{window_counter[0]:3d}/{len(windows_to_process):3d}] Processing window at height {h_int:4d}"
+		sys.stdout.write(progress + "\r")
+		sys.stdout.flush()
+		logging.info(f"Processing window {window_counter[0]}/{len(windows_to_process)} at height {h_int}")
+
+		boxes, scores, cls, feat_map, original_img_size = matcher.detect_boxes_yolo(
+			crop_img,
+			extract_features=True,
+			save_preprocessing=debug_preprocessing,
+			window_id=window_id,
+			image_type=image_type
+		)
 		if len(boxes) == 0:
 			return None, None, None, None
 		# 2. 특징 추출
@@ -814,16 +899,19 @@ class LegacyElementExtractorActor:
 		try:
 			logging.info(f"🔥 Starting {task_name} elements extraction in Ray actor...")
 			start_time = time.time()
-			
+
 			# 이미지 데이터를 PIL Image로 변환
 			if isinstance(image_data, bytes):
 				import io
 				image = Image.open(io.BytesIO(image_data))
 			else:
 				image = image_data
-			
+
+			# task_name에서 image_type 추출 (예: "Figma" -> "figma", "Web" -> "web")
+			image_type = task_name.lower() if task_name else None
+
 			# 요소 추출
-			extracted_elements = extract_elements(image, start_x, target_height, self.matcher)
+			extracted_elements = extract_elements(image, start_x, target_height, self.matcher, image_type=image_type)
 			
 			extraction_time = time.time()
 			logging.info(f"✅ {task_name} elements extraction completed: {extraction_time - start_time:.2f} seconds")
@@ -1081,12 +1169,13 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		logging.info(f"Figma elements extracted: {len(figma_extracted)}")
 		logging.info(f"Web elements extracted: {len(web_extracted)}")
 
-		visualizer.visualize_boxes(root_image, [f.box for f in figma_extracted], "Figma elements extracted", show=False, save=True, save_path="figma_elements_extracted.png")
-		visualizer.visualize_boxes(web_img, [e.box for e in web_extracted], "Web elements extracted", show=False, save=True, save_path="web_elements_extracted.png")
+		visualizer.visualize_boxes(root_image, [f.box for f in figma_extracted], "Figma elements extracted", show=False, save=True, save_path="yolo/debug_img/figma_elements_extracted.png")
+		visualizer.visualize_boxes(web_img, [e.box for e in web_extracted], "Web elements extracted", show=False, save=True, save_path="yolo/debug_img/web_elements_extracted.png")
 
 		logging.info(f"Figma elements extracted: {len(figma_extracted)}")        
 		fare_figma = fare_figma_extracted(figma_tree, figma_extracted, figma_interactions)
-		# visualizer.visualize_boxes(root_image, [f.extracted.box for f in fare_figma], "fare")
+
+		visualizer.visualize_boxes(root_image, [f.extracted.box for f in fare_figma], "fare_figma", show=False, save=True, save_path="yolo/debug_img/fare_figma.png")
 		# return []
 		logging.info("finished figma elements extracting\n")
 
@@ -1148,7 +1237,7 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 
 		# Combine matches
 		matches = matches_interaction + matches_no_interaction
-		visualizer.visualize_matches(root_image, web_img, matches, "Matching Visualization", show=False, save=True, save_path="matching_visualization.png")
+		visualizer.visualize_matches(root_image, web_img, matches, "Matching Visualization", show=False, save=True, save_path="yolo/debug_img/matching_visualization.png")
 
 		# Save per-match crops with scores for debugging
 		try:
