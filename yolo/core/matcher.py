@@ -602,7 +602,7 @@ class SimilarityMatcher:
                 size_similarity=size_sim,
                 coordinate_similarity=coord_sim,
                 score=float(score),
-                errorCategories=[]  # 에러 체크는 나중에
+                errorCategories=[NORMAL]  # 매칭 성공
             )
             matches.append(mr)
 
@@ -800,7 +800,7 @@ class SimilarityMatcher:
                 size_similarity=size_sim,
                 coordinate_similarity=coord_sim,
                 score=float(absolute_score),
-                errorCategories=[]
+                errorCategories=[NORMAL]  # 매칭 성공
             )
             matches.append(match)
             matched_figma.add(figma_idx)
