@@ -64,13 +64,16 @@ class ColoredFormatter(logging.Formatter):
 		log_fmt = f"{color}{self.BOLD}[{icon} {levelname:8s}]{self.RESET} {color}{module:20s}{self.RESET} │ {record.getMessage()}"
 		return log_fmt
 
-# 루트 로거에 ColoredFormatter 적용
+# 루트 로거에 ColoredFormatter 적용 (기존 핸들러 제거 후 재설정)
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-if not logger.handlers:
-	handler = logging.StreamHandler(sys.stdout)
-	handler.setFormatter(ColoredFormatter())
-	logger.addHandler(handler)
+# 기존 핸들러 모두 제거
+for handler in logger.handlers[:]:
+	logger.removeHandler(handler)
+# ColoredFormatter 핸들러 추가
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(ColoredFormatter())
+logger.addHandler(handler)
 
 # Import non_max_suppression from element_matcher
 
@@ -80,7 +83,7 @@ def time_check(name: str):
 	start_time = time.time()
 	yield
 	end_time = time.time()
-	logging.info(f"{name}: {end_time - start_time} seconds")
+	logger.info(f"{name}: {end_time - start_time} seconds")
 
 def timecheck(func):
 	def wrapper(*args, **kwargs):
@@ -97,7 +100,7 @@ def seed_everything(seed: int = 42):
 	torch.cuda.manual_seed_all(seed)
 	torch.backends.cudnn.deterministic = True
 	torch.backends.cudnn.benchmark = False
-	logging.info(f"Random seed set to {seed}")
+	logger.info(f"Random seed set to {seed}")
 
 def catergorize_match(match: MatchResult) -> List[str]:
 	"""매칭된 요소들을 카테고리별로 분류"""
@@ -118,7 +121,7 @@ def catergorize_match(match: MatchResult) -> List[str]:
 	if len(category) == 0:
 		category.append(NORMAL)
 	
-	logging.debug(f"Categorized match for : {category}")
+	logger.debug(f"Categorized match for : {category}")
 	return category
 
 def get_mapping_info(matches: List[MatchResult]) -> List[BaseMappingInfo]:
@@ -135,7 +138,7 @@ def get_mapping_info(matches: List[MatchResult]) -> List[BaseMappingInfo]:
 			isRouting=match.isRouting
 		)
 		mapping_infos.append(mapping_info)
-	logging.info(f"Generated {len(mapping_infos)} mapping infos.")
+	logger.info(f"Generated {len(mapping_infos)} mapping infos.")
 	return mapping_infos
 
 def extract_texts(img: Image.Image, matcher: LegacyElementExtractor, boxes: List[Tuple[int, int, int, int]]) -> List[str]:
@@ -218,7 +221,7 @@ def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matc
 	- "balanced": 속도와 정확도 균형 (적당한 최적화)
 	- "accurate": 정확도 우선 (기존 설정 유지)
 	"""
-	logging.info(f"Extracting elements from image with height {img.height} using {speed_mode} mode...")
+	logger.info(f"Extracting elements from image with height {img.height} using {speed_mode} mode...")
 	
 	# speed_mode에 따른 최적화 설정
 	if speed_mode == "fast":
@@ -236,10 +239,10 @@ def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matc
 		# 균형 모드 (기존 최적화)
 		if img.height > 3000:
 			optimized_window_height = int(windowing_height * 1.5)  # 50% 증가
-			overlap_ratio = 0.85  # 15% 오버랩
+			overlap_ratio = 0.5  # 15% 오버랩
 		elif img.height > 2000:
 			optimized_window_height = int(windowing_height * 1.2)  # 20% 증가
-			overlap_ratio = 0.8   # 20% 오버랩
+			overlap_ratio = 0.5   # 20% 오버랩
 		else:
 			optimized_window_height = windowing_height
 			overlap_ratio = 0.75  # 기본값 유지
@@ -281,7 +284,7 @@ def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matc
 		current_height += optimized_window_height * overlap_ratio
 	
 	if skipped_windows > 0:
-		logging.info(f"Skipped {skipped_windows} empty windows for optimization")
+		logger.info(f"Skipped {skipped_windows} empty windows for optimization")
 
 	all_boxes = []
 	all_scores = []
@@ -313,7 +316,7 @@ def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matc
 	sys.stdout.write(log_text)
 	sys.stdout.flush()
 
-	logging.info(f"Element Extraction Start - Type:{image_type or 'unknown'}, Windows:{len(windows_to_process)}, Mode:{preprocess_mode}")
+	logger.info(f"Element Extraction Start - Type:{image_type or 'unknown'}, Windows:{len(windows_to_process)}, Mode:{preprocess_mode}")
 
 	# 각 창에 대해 순차적으로 탐지 및 특징 추출 수행
 	def process_window(crop_img, original_height):
@@ -327,7 +330,7 @@ def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matc
 		progress = f"  ⏳ [{window_counter[0]:3d}/{len(windows_to_process):3d}] Processing window at height {h_int:4d}"
 		sys.stdout.write(progress + "\r")
 		sys.stdout.flush()
-		logging.info(f"Processing window {window_counter[0]}/{len(windows_to_process)} at height {h_int}")
+		logger.info(f"Processing window {window_counter[0]}/{len(windows_to_process)} at height {h_int}")
 
 		boxes, scores, cls, feat_map, original_img_size = matcher.detect_boxes_yolo(
 			crop_img,
@@ -347,7 +350,7 @@ def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matc
 		
 		return boxes, scores, cls, features
 	
-	logging.info(f"Processing {len(windows_to_process)} windows sequentially (optimized for multiprocessing environment)...")
+	logger.info(f"Processing {len(windows_to_process)} windows sequentially (optimized for multiprocessing environment)...")
 	start_time = time.time()
 	
 	# 순차 처리 (이미 멀티프로세싱 환경이므로 추가 병렬화는 비효율적)
@@ -360,10 +363,10 @@ def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matc
 			all_features.append(features)
 	
 	end_time = time.time()
-	logging.info(f"Time taken: {end_time - start_time} seconds for figma extraction (sequential in MP environment)")
+	logger.info(f"Time taken: {end_time - start_time} seconds for figma extraction (sequential in MP environment)")
 
 	if not all_boxes:
-		logging.info("No elements were extracted.")
+		logger.info("No elements were extracted.")
 		return []
 
 	# 모든 결과를 하나로 합침
@@ -383,7 +386,7 @@ def extract_elements(img: Image.Image, start_x: int, windowing_height: int, matc
 			cls = nms_cls[i]
 			extracted_elements.append(ExtractedElement(box=box, feature=feature, text=None, cls=cls))
 
-	logging.info(f"Extracted and filtered {len(extracted_elements)} elements.")
+	logger.info(f"Extracted and filtered {len(extracted_elements)} elements.")
 	return extracted_elements
 
 
@@ -523,7 +526,7 @@ def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, 
 			failReason=NORMAL,
 			isSuccess=True,
 		))
-		logging.debug(f"Found URL for {match.figma.name}: {urls}")
+		logger.debug(f"Found URL for {match.figma.name}: {urls}")
 	else:
 		return_matches.append(RoutingMappingInfo(
 			type="ROUTING",
@@ -575,7 +578,7 @@ def match_interaction(matcher: LegacyElementExtractor, matches: List[MatchResult
 	return return_matches
 def process_matches(matcher: LegacyElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
 	"""매칭 결과 처리"""
-	logging.info("Processing matches...")
+	logger.info("Processing matches...")
 	return_matches = []
 
 	for match in matches:
@@ -588,11 +591,11 @@ def process_matches(matcher: LegacyElementExtractor, matches: List[MatchResult],
 	return return_matches
 
 def load_figma_json(json_url: str) -> Dict:
-	logging.info(f"Loading Figma JSON from {json_url}")
+	logger.info(f"Loading Figma JSON from {json_url}")
 	response = requests.get(json_url)
 	response.raise_for_status()
 	figma_json = response.json()
-	logging.info("Figma JSON loaded successfully.")
+	logger.info("Figma JSON loaded successfully.")
 	return figma_json
 
 def convert_raw_to_tree(figma_tree: Dict, root_image: Image.Image, level: int = 0) -> TreeNode:
@@ -625,7 +628,7 @@ def match_all_extracted(
 	It resolves conflicts to ensure each extracted element is matched with at most one node.
 	"""
 
-	logging.info(f"Matching tree nodes to {len(extracted_list)} extracted boxes, prioritizing interactions.")
+	logger.info(f"Matching tree nodes to {len(extracted_list)} extracted boxes, prioritizing interactions.")
 
 	interaction_source_ids = {interaction['interactionType']['sourceId'] for interaction in interactions}
 	
@@ -679,7 +682,7 @@ def match_all_extracted(
 		return resolved_matches, matched_extracted_ids
 
 	# --- 1. Match interaction nodes ---
-	logging.info(f"Attempting to match {len(interaction_nodes)} interaction nodes.")
+	logger.info(f"Attempting to match {len(interaction_nodes)} interaction nodes.")
 	interaction_match_results, matched_extracted_ids_1 = find_and_resolve_matches(interaction_nodes, remaining_extracted)
 	for match_info in interaction_match_results:
 		final_matches.append(
@@ -690,11 +693,11 @@ def match_all_extracted(
 				extracted=match_info['extracted']
 			)
 		)
-	logging.info(f"Matched {len(final_matches)} interaction nodes.")
+	logger.info(f"Matched {len(final_matches)} interaction nodes.")
 
 	# --- 2. Match other nodes with remaining extracted elements ---
 	remaining_extracted = [ext for ext in remaining_extracted if id(ext) not in matched_extracted_ids_1]
-	logging.info(f"Attempting to match {len(other_nodes)} other nodes with {len(remaining_extracted)} remaining boxes.")
+	logger.info(f"Attempting to match {len(other_nodes)} other nodes with {len(remaining_extracted)} remaining boxes.")
 	
 	if other_nodes and remaining_extracted:
 		other_match_results, _ = find_and_resolve_matches(other_nodes, remaining_extracted)
@@ -707,10 +710,10 @@ def match_all_extracted(
 					extracted=match_info['extracted']
 				)
 			)
-		logging.info(f"Matched {len(other_match_results)} other nodes.")
+		logger.info(f"Matched {len(other_match_results)} other nodes.")
 
 
-	logging.info(f"Found {len(final_matches)} unique matched nodes in total.")
+	logger.info(f"Found {len(final_matches)} unique matched nodes in total.")
 	return final_matches
 
 def prune_tree(
@@ -766,7 +769,7 @@ def fare_figma_extracted(
 	"""
 	# Pass interactions to the matching function
 	matched_nodes = match_all_extracted(figma_tree, figma_extracted, interactions)
-	logging.info("Finished pruning tree.")
+	logger.info("Finished pruning tree.")
 	return matched_nodes
 
 def load_figma_data(json_url: str) -> List[Dict]:
@@ -833,7 +836,7 @@ def categorize_match(match: MatchResult) -> List[str]:
 	if len(category) == 0:
 		category.append(NORMAL)
 	
-	logging.debug(f"Categorized match for : {category}")
+	logger.debug(f"Categorized match for : {category}")
 	return category
 
 
@@ -842,7 +845,7 @@ def extract_elements_worker(args):
 	image, target_height, task_name = args
 	
 	try:
-		logging.info(f"🔥 Starting {task_name} elements extraction...")
+		logger.info(f"🔥 Starting {task_name} elements extraction...")
 		start_time = time.time()
 		
 		# 각 워커마다 새로운 matcher 인스턴스 생성
@@ -850,13 +853,13 @@ def extract_elements_worker(args):
 		extracted_elements = extract_elements(image, 0, target_height, local_matcher)
 		
 		end_time = time.time()
-		logging.info(f"✅ {task_name} elements extraction completed: {end_time - start_time:.2f} seconds")
-		logging.info(f"{task_name} elements extracted: {len(extracted_elements)}")
+		logger.info(f"✅ {task_name} elements extraction completed: {end_time - start_time:.2f} seconds")
+		logger.info(f"{task_name} elements extracted: {len(extracted_elements)}")
 		
 		return extracted_elements
 		
 	except Exception as e:
-		logging.error(f"❌ Error in {task_name} elements extraction: {e}")
+		logger.error(f"❌ Error in {task_name} elements extraction: {e}")
 		raise e
 
 # 🔧 멀티프로세싱용 전역 변수
@@ -879,15 +882,15 @@ class LegacyElementExtractorActor:
 			torch.cuda.set_device(-1) if torch.cuda.is_available() else None
 			os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
-			logging.info("🔧 Initializing YOLO model in Ray actor (CPU mode)...")
+			logger.info("🔧 Initializing YOLO model in Ray actor (CPU mode)...")
 			self.matcher = LegacyElementExtractor(resize_size=(736, 736))
 
 			# YOLO 모델을 CPU 모드로 강제 설정
 			self.matcher.yolo.model.to('cpu')
 
-			logging.info("✅ YOLO model initialized in Ray actor (CPU mode)")
+			logger.info("✅ YOLO model initialized in Ray actor (CPU mode)")
 		except Exception as e:
-			logging.error(f"❌ Error initializing Ray actor: {e}")
+			logger.error(f"❌ Error initializing Ray actor: {e}")
 			raise e
 
 	def warmup(self):
@@ -897,7 +900,7 @@ class LegacyElementExtractorActor:
 	def extract_elements_with_ocr(self, image_data, target_height, task_name, start_x=0, include_ocr=True):
 		"""Ray 원격 함수로 요소 추출 및 OCR"""
 		try:
-			logging.info(f"🔥 Starting {task_name} elements extraction in Ray actor...")
+			logger.info(f"🔥 Starting {task_name} elements extraction in Ray actor...")
 			start_time = time.time()
 
 			# 이미지 데이터를 PIL Image로 변환
@@ -914,12 +917,12 @@ class LegacyElementExtractorActor:
 			extracted_elements = extract_elements(image, start_x, target_height, self.matcher, image_type=image_type)
 			
 			extraction_time = time.time()
-			logging.info(f"✅ {task_name} elements extraction completed: {extraction_time - start_time:.2f} seconds")
-			logging.info(f"{task_name} elements extracted: {len(extracted_elements)}")
+			logger.info(f"✅ {task_name} elements extraction completed: {extraction_time - start_time:.2f} seconds")
+			logger.info(f"{task_name} elements extracted: {len(extracted_elements)}")
 			
 			# OCR 처리 (요청된 경우)
 			if include_ocr and extracted_elements:
-				logging.info(f"🔤 Starting OCR for {task_name} elements in Ray actor...")
+				logger.info(f"🔤 Starting OCR for {task_name} elements in Ray actor...")
 				ocr_start = time.time()
 				
 				# 각 요소에 대해 OCR 수행
@@ -930,15 +933,15 @@ class LegacyElementExtractorActor:
 					element.text = self.matcher.extract_text(image, margin_box)
 				
 				ocr_time = time.time()
-				logging.info(f"✅ {task_name} OCR completed: {ocr_time - ocr_start:.2f} seconds")
+				logger.info(f"✅ {task_name} OCR completed: {ocr_time - ocr_start:.2f} seconds")
 			
 			total_time = time.time()
-			logging.info(f"🎯 {task_name} total processing time: {total_time - start_time:.2f} seconds")
+			logger.info(f"🎯 {task_name} total processing time: {total_time - start_time:.2f} seconds")
 			
 			return extracted_elements
 			
 		except Exception as e:
-			logging.error(f"❌ Error in {task_name} elements extraction/OCR: {e}")
+			logger.error(f"❌ Error in {task_name} elements extraction/OCR: {e}")
 			raise e
 
 
@@ -947,7 +950,7 @@ def extract_elements_multiprocessing(figma_image: Image.Image, web_image: Image.
 	멀티프로세싱을 사용한 요소 추출
 	Figma 요소 추출 + Web 요소 추출을 동시에 처리
 	"""
-	logging.info("🚀 Starting multiprocessing elements extraction...")
+	logger.info("🚀 Starting multiprocessing elements extraction...")
 	
 	# 이미지를 bytes로 변환 (프로세스 간 전달용)
 	import io
@@ -975,7 +978,7 @@ def extract_elements_multiprocessing(figma_image: Image.Image, web_image: Image.
 		web_extracted = web_future.result()
 	
 	end_time = time.time()
-	logging.info(f"🎯 Multiprocessing elements extraction completed: {end_time - start_time:.2f} seconds")
+	logger.info(f"🎯 Multiprocessing elements extraction completed: {end_time - start_time:.2f} seconds")
 	
 	return figma_extracted, web_extracted
 
@@ -1059,29 +1062,29 @@ def mapping_v2(base_url: str, current_page: str, json_url: str, **kwargs):
 	- 설정 기반 파라미터 조정
 	- 개선된 에러 처리
 	"""
-	logging.info(f"✨ Starting new pipeline mapping for base_url: {base_url} and json_url: {json_url}")
+	logger.info(f"✨ Starting new pipeline mapping for base_url: {base_url} and json_url: {json_url}")
 
 	try:
 		# 파이프라인 생성
 		pipeline = create_pipeline()
 
 		# 매칭 실행 (올바른 메서드 사용)
-		logging.info("🚀 Executing pipeline.process_from_mapping_data()...")
+		logger.info("🚀 Executing pipeline.process_from_mapping_data()...")
 		mapping_infos = pipeline.process_from_mapping_data(
 			current_url=base_url,
 			current_page=current_page,
 			figma_url=json_url
 		)
 
-		logging.info(f"✅ New pipeline completed: {len(mapping_infos)} mapping infos generated")
+		logger.info(f"✅ New pipeline completed: {len(mapping_infos)} mapping infos generated")
 		return mapping_infos
 
 	except Exception as e:
-		logging.error(f"❌ New pipeline mapping failed: {e}")
+		logger.error(f"❌ New pipeline mapping failed: {e}")
 		import traceback
 		traceback.print_exc()
 		# fallback to legacy mapping
-		logging.info("⚠️  Falling back to legacy mapping...")
+		logger.info("⚠️  Falling back to legacy mapping...")
 		return mapping_legacy(base_url, current_page, json_url, **kwargs)
 
 
@@ -1097,17 +1100,21 @@ def mapping(base_url: str, current_page: str, json_url: str, test_performance: b
 		use_new_pipeline = str(os.environ.get('USE_NEW_PIPELINE', '0')).lower() in ('1', 'true', 'yes')
 
 	if use_new_pipeline:
-		logging.info("Using new class-based pipeline")
+		logger.info("Using new class-based pipeline")
 		return mapping_v2(base_url, current_page, json_url, test_performance=test_performance)
 	else:
-		logging.info("Using legacy mapping implementation")
+		logger.info("Using legacy mapping implementation")
 		return mapping_legacy(base_url, current_page, json_url, test_performance=test_performance)
 
 
 def mapping_legacy(base_url: str, current_page: str, json_url: str, test_performance: bool = False):
 	"""기존 레거시 매핑 함수 (원본 코드)"""
-	logging.info(f"Starting legacy mapping process for base_url: {base_url} and json_url: {json_url}")
-	target_height = 720
+	logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	logger.info(f"LEGACY MAPPING STARTED")
+	logger.info(f"Base URL: {base_url}")
+	logger.info(f"JSON URL: {json_url}")
+	logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	target_height = 1080
 	seed_everything(42)
 
 	# WebNavigatorConfig를 사용하여 설정 전달
@@ -1118,7 +1125,7 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 
 	# Ray 초기화 (더 많은 워커를 위해 CPU 수 명시)
 	if not ray.is_initialized():
-		logging.info("🚀 Initializing Ray...")
+		logger.info("Initializing Ray cluster (CPU: 2, GPU: 0)...")
 		# GPU 관련 경고 메시지 제거
 		import os
 		os.environ['RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO'] = '0'
@@ -1130,14 +1137,14 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 			log_to_driver=False,  # Ray 로그를 줄임
 			_temp_dir="/tmp/ray"  # Ray 임시 파일 위치 지정
 		)
-		logging.info("✅ Ray initialized successfully")
+		logger.info("Ray cluster initialized successfully")
 	
 	profiler = cProfile.Profile()
 	profiler.enable()
 
 	try:
 		# 1. 이미지 처리
-		logging.info("Step 1: Image Processing")
+		logger.info("STEP 1: IMAGE PROCESSING")
 		matcher = LegacyElementExtractor(resize_size=(736, 736))
 
 		# 유사도 매칭을 위한 SimilarityMatcher 생성 (개선된 유사도 계산 사용)
@@ -1150,53 +1157,52 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		root_image = get_img_by_id(root_frame['data']['id'], figma_raw)
 		figma_tree = convert_raw_to_tree(root_frame, root_image)
 		start_x = get_start_x(figma_tree)
-		
-		logging.info("Start Web page capturing...")
+
+		logger.info("Capturing web page...")
 		web_navigator.navigate(base_url)
 		web_img = web_navigator.capture_full_page_with_scroll(root_image, target_height)
 		print(f"web_img.size: {web_img.size}")
 		web_img.save("web_img.png", format='PNG')
-		logging.info("finished web page capturing\n")
+		logger.info("Web page captured successfully")
 
-		logging.info("Start Figma elements extracting...")
+		logger.info("STEP 2: ELEMENT EXTRACTION (Ray Distributed)")
 		start_time = time.time()
-		# 🚀 Ray를 사용한 분산 병렬 요소 추출
-		logging.info("🔥 Using Ray for distributed parallel extraction...")
 
 		figma_extracted, web_extracted = extract_elements_ray(root_image, web_img, target_height, start_x, include_ocr=True)
 		end_time = time.time()
-		logging.info(f"Time taken: {end_time - start_time} seconds for elements extraction + OCR\n")
-		logging.info(f"Figma elements extracted: {len(figma_extracted)}")
-		logging.info(f"Web elements extracted: {len(web_extracted)}")
+
+		logger.info(f"Element extraction completed in {end_time - start_time:.2f}s")
+		logger.info(f"Extracted Figma elements: {len(figma_extracted)}")
+		logger.info(f"Extracted Web elements: {len(web_extracted)}")
+
+		# 디버그 이미지 저장 폴더 생성
+		os.makedirs("yolo/debug_img", exist_ok=True)
 
 		visualizer.visualize_boxes(root_image, [f.box for f in figma_extracted], "Figma elements extracted", show=False, save=True, save_path="yolo/debug_img/figma_elements_extracted.png")
 		visualizer.visualize_boxes(web_img, [e.box for e in web_extracted], "Web elements extracted", show=False, save=True, save_path="yolo/debug_img/web_elements_extracted.png")
 
-		logging.info(f"Figma elements extracted: {len(figma_extracted)}")        
 		fare_figma = fare_figma_extracted(figma_tree, figma_extracted, figma_interactions)
 
 		visualizer.visualize_boxes(root_image, [f.extracted.box for f in fare_figma], "fare_figma", show=False, save=True, save_path="yolo/debug_img/fare_figma.png")
-		# return []
-		logging.info("finished figma elements extracting\n")
 
-		# OCR은 이미 multiprocessing 안에서 완료됨
-		logging.info("✅ OCR already completed during multiprocessing extraction")
+		logger.info("Figma element processing completed")
+		logger.info("OCR already completed during extraction")
 		figma_extracted_boxes = [f.extracted.box for f in fare_figma]
 		web_extracted_boxes = [e.box for e in web_extracted]
-		logging.info(f"Web elements extracted: {len(web_extracted)}")
 
-		logging.info("Step 3: Separating Figma elements based on interactions")
+		logger.info("STEP 3: SEPARATING INTERACTIONS")
 		interaction_source_ids = {interaction['interactionType']['sourceId'] for interaction in figma_interactions}
 		fare_figma_interaction = [f for f in fare_figma if f.id in interaction_source_ids]
 		fare_figma_no_interaction = [f for f in fare_figma if f.id not in interaction_source_ids]
-		logging.info(f"Found {len(fare_figma_interaction)} elements with interactions and {len(fare_figma_no_interaction)} without.")
+		logger.info(f"With interactions: {len(fare_figma_interaction)} | Without: {len(fare_figma_no_interaction)}")
 
 
-		logging.info("Step 4a: Matching elements WITH interactions (using SimilarityMatcher)")
+		logger.info("STEP 4: MATCHING ELEMENTS")
+		logger.info("Matching interactive elements...")
 		# 개선된 SimilarityMatcher 사용
 		matches_interaction, unmatched_figma_interaction, unmatched_web_interaction = \
 			similarity_matcher.find_matches(fare_figma_interaction, web_extracted)
-		logging.info(f"Found {len(matches_interaction)} matches for interaction elements.")
+		logger.info(f"Matched {len(matches_interaction)} interactive elements")
 
 
 
@@ -1205,18 +1211,18 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		matched_web_elements_ids = {id(match.web) for match in matches_interaction}
 		web_extracted_remaining = [web_el for web_el in web_extracted if id(web_el) not in matched_web_elements_ids]
 		
-		logging.info(f"{len(web_extracted_remaining)} web elements remaining for second match.")
-		logging.info("Step 4b: Matching elements WITHOUT interactions (using SimilarityMatcher)")
+		logger.info(f"Remaining web elements: {len(web_extracted_remaining)}")
+		logger.info("Matching non-interactive elements...")
 		if fare_figma_no_interaction and web_extracted_remaining:
 			# 개선된 SimilarityMatcher 사용
 			matches_no_interaction, unmatched_figma_no_interaction, unmatched_web_no_interaction = \
 				similarity_matcher.find_matches(fare_figma_no_interaction, web_extracted_remaining)
-			logging.info(f"Found {len(matches_no_interaction)} matches for non-interaction elements.")
+			logger.info(f"Matched {len(matches_no_interaction)} non-interactive elements")
 		else:
 			matches_no_interaction = []
 			unmatched_figma_no_interaction = fare_figma_no_interaction
 			unmatched_web_no_interaction = web_extracted_remaining
-			logging.info("No non-interaction elements or remaining web elements to match.")
+			logger.info("No non-interactive elements to match")
 
 		# 교집합 남기도록 필터링
 		unmatched_figma = []    
@@ -1243,34 +1249,32 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		try:
 			if getattr(matcher, 'debug_similarity', False):
 				out_dir = _save_match_crops(root_image, web_img, matches)
-				logging.info(f"Saved match crops to: {out_dir}")
+				logger.info(f"Saved match crops to: {out_dir}")
 		except Exception as e:
-			logging.warning(f"Failed to save match crops: {e}")
+			logger.warning(f"Failed to save match crops: {e}")
 
 		# visualizer.visualize_boxes(root_image, [m.figma.extracted.box for m in unmatched_figma], "Unmatched Figma elements")
 		# visualizer.visualize_boxes(web_img, [m.web.box for m in unmatched_web], "Unmatched Web elements")
 		# return []
-		logging.info(f"Found {len(matches)} total matches.")
-	
-		logging.info("Step 5: Processing Matches")
+		logger.info(f"Total matches found: {len(matches)}")
+
+		logger.info("STEP 5: PROCESSING MATCHES & INTERACTIONS")
 		return_matches = []
 		# 리스트를 extend로 합쳐서 중첩된 리스트 구조를 평평하게 만듦
-		logging.info("Step 6: Matching Interactions")
 		return_matches.extend(match_interaction(matcher, matches_interaction, web_navigator, web_img, figma_interactions, figma_tree, figma_raw))
-		logging.info(f"Found {len(return_matches)} matches for interaction elements.")
-		logging.info("Step 7: Processing Matches")
+		logger.info(f"Processed {len(return_matches)} interactive matches")
 		return_matches.extend(process_matches(matcher, matches, web_navigator, figma_interactions, figma_tree, figma_raw))
-		logging.info(f"Found {len(return_matches)} matches for non-interaction elements.")
+		logger.info(f"Total processed matches: {len(return_matches)}")
 		return return_matches
 
 	finally:
 		if web_navigator.driver is not None:
-			logging.info("Closing WebDriver.")
+			logger.info("Closing WebDriver")
 			web_navigator.quit()
-		
+
 		# Ray 정리
 		if ray.is_initialized():
-			logging.info("🔧 Shutting down Ray...")
+			logger.info("Shutting down Ray cluster...")
 			# Actor 풀 정리
 			global _actor_pool
 			if _actor_pool is not None:
@@ -1281,12 +1285,12 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 					pass
 				_actor_pool = None
 			ray.shutdown()
-			logging.info("✅ Ray shutdown completed")
-		
+			logger.info("Ray cluster shutdown completed")
+
 		profiler.disable()
 		stats = pstats.Stats(profiler).sort_stats('cumtime')
 		stats.dump_stats('profile_results.prof')
-		logging.info("Profiling results saved to profile_results.prof")
+		logger.info("Profiling results saved to profile_results.prof")
 
 # 글로벌 Actor 풀 (재사용을 위해)
 _actor_pool = None
@@ -1295,7 +1299,7 @@ def get_or_create_actor_pool():
 	"""Actor 풀 생성 또는 반환 (YOLO 모델을 미리 로드)"""
 	global _actor_pool
 	if _actor_pool is None:
-		logging.info("🔧 Creating Ray actor pool (2 actors)...")
+		logger.info("🔧 Creating Ray actor pool (2 actors)...")
 		start = time.time()
 
 		# 2개의 Actor 생성 (Figma용, Web용)
@@ -1307,7 +1311,7 @@ def get_or_create_actor_pool():
 
 		_actor_pool = {'figma': figma_actor, 'web': web_actor}
 		elapsed = time.time() - start
-		logging.info(f"✅ Actor pool created and warmed up in {elapsed:.2f}s")
+		logger.info(f"✅ Actor pool created and warmed up in {elapsed:.2f}s")
 
 	return _actor_pool
 
@@ -1317,9 +1321,9 @@ def extract_elements_ray(figma_image: Image.Image, web_image: Image.Image, targe
 	Actor 재사용으로 YOLO 모델 재로딩 방지
 	"""
 	if include_ocr:
-		logging.info("🚀 Starting Ray distributed elements extraction + OCR...")
+		logger.info("🚀 Starting Ray distributed elements extraction + OCR...")
 	else:
-		logging.info("🚀 Starting Ray distributed elements extraction...")
+		logger.info("🚀 Starting Ray distributed elements extraction...")
 
 	# 이미지를 bytes로 변환 (Ray 간 전달용)
 	import io
@@ -1353,9 +1357,9 @@ def extract_elements_ray(figma_image: Image.Image, web_image: Image.Image, targe
 
 	end_time = time.time()
 	if include_ocr:
-		logging.info(f"🎯 Ray distributed elements extraction + OCR completed: {end_time - start_time:.2f} seconds")
+		logger.info(f"🎯 Ray distributed elements extraction + OCR completed: {end_time - start_time:.2f} seconds")
 	else:
-		logging.info(f"🎯 Ray distributed elements extraction completed: {end_time - start_time:.2f} seconds")
+		logger.info(f"🎯 Ray distributed elements extraction completed: {end_time - start_time:.2f} seconds")
 	
 	return figma_extracted, web_extracted
 

@@ -27,12 +27,12 @@ if _USE_PADDLE:
 		import logging
 		logging.getLogger('ppocr').setLevel(logging.ERROR)
 		_PADDLE_IMPORTED = True
-		import logging
-		logging.info(f"PaddlePaddle {paddle_version} loaded")
+		# PaddlePaddle 로드 성공 (로깅은 나중에 logger로)
+		pass
 	except Exception as e:
 		_PADDLE_IMPORTED = False
-		import logging
-		logging.warning(f"PaddlePaddle load failed: {e}")
+		# PaddlePaddle 로드 실패 (로깅은 나중에 logger로)
+		pass
 
 # PyTorch는 PaddlePaddle 이후에 import
 import torch
@@ -96,85 +96,6 @@ if not logger.handlers:
 	logger.setLevel(logging.INFO)
 	logger.propagate = False  # 중복 방지
 
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
-def letterbox(im: np.ndarray, new_shape: Tuple[int, int] = (640, 640), color: Tuple[int, int, int] = (114, 114, 114)) -> Tuple[np.ndarray, float, Tuple[int, int]]:
-	"""
-	Resize and pad image to meet new_shape, maintaining aspect ratio.
-
-	Args:
-		im: Input image (numpy array)
-		new_shape: Target shape (height, width)
-		color: Padding color
-
-	Returns:
-		Tuple of (padded_image, resize_ratio, (left_padding, top_padding))
-	"""
-	shape = im.shape[:2]  # current shape [height, width]
-
-	# Compute resize ratio
-	r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-
-	# Compute unpadded new size
-	new_unpad = (int(round(shape[1] * r)), int(round(shape[0] * r)))
-
-	# Compute padding
-	dw = new_shape[1] - new_unpad[0]
-	dh = new_shape[0] - new_unpad[1]
-	dw /= 2  # divide padding into 2 sides
-	dh /= 2
-
-	# Resize image
-	im_resized = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
-
-	# Compute border sizes
-	top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-	left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-
-	# Add border
-	im_padded = cv2.copyMakeBorder(
-		im_resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color
-	)
-
-	return im_padded, r, (left, top)
-
-
-def non_max_suppression(
-	boxes: np.ndarray,
-	scores: Optional[np.ndarray] = None,
-	iou_threshold: float = 0.5
-) -> List[int]:
-	"""
-	Perform Non-Maximum Suppression on axis-aligned bounding boxes.
-
-	Args:
-		boxes: numpy array of shape (N,4) in (x1,y1,x2,y2) format
-		scores: confidence scores array of shape (N,), defaults to all 1s
-		iou_threshold: IOU threshold for NMS
-
-	Returns:
-		List of indices to keep
-	"""
-	if boxes.size == 0:
-		return []
-
-	# Convert numpy arrays to torch tensors
-	boxes_tensor = torch.from_numpy(boxes).float()
-	if scores is None:
-		scores_tensor = torch.ones(len(boxes), dtype=torch.float32)
-	else:
-		scores_tensor = torch.from_numpy(scores).float()
-
-	# Perform NMS
-	keep_indices_tensor = torchvision.ops.nms(boxes_tensor, scores_tensor, iou_threshold)
-
-	# Convert result back to a list of integers
-	return keep_indices_tensor.cpu().numpy().tolist()
-
-
 # ============================================================================
 # Legacy ElementExtractor Class
 # ============================================================================
@@ -212,6 +133,14 @@ class ElementExtractor:
 		os.environ['OMP_NUM_THREADS'] = '1'
 		os.environ['MKL_NUM_THREADS'] = '1'
 
+		logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		logger.info("ElementMatcher initialized")
+		logger.info(f"yolo_model_path: {yolo_model_path}")
+		logger.info(f"resize_size: {resize_size}")
+		logger.info(f"debug_similarity: {debug_similarity}")
+		logger.info(f"use_paddleocr: {use_paddleocr}")
+		logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		
 		# YOLO 모델 초기화
 		current_dir = os.path.dirname(__file__)
 		if yolo_model_path is None:
@@ -860,7 +789,7 @@ class ElementExtractor:
 		self,
 		pil_img: Image.Image,
 		conf_thresh: float = 0.05,
-		max_det: int = 500,
+		max_det: int = 1000,
 		extract_features: bool = False,
 		save_preprocessing: bool = None,
 		save_path: str = None,
