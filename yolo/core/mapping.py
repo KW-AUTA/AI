@@ -515,8 +515,12 @@ def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, 
 	center_x = float(match.web.box[0] + match.web.box[2]) / 2
 	center_y = float(match.web.box[1] + match.web.box[3]) / 2
 	element, xpath = web_navigator.get_element_at_coordinate_and_xpath(center_x, center_y)
+	logger.info(f"Interaction for {match.figma.name}: {interaction['interactionType']['navigation']}")
+	logger.info(f"Element: {element}")
+	logger.info(f"XPath: {xpath}")
 	if element is not None and xpath is not None:
 		urls = web_navigator.get_url_in_new_tab(xpath)
+		logger.info(f"Found URL for {match.figma.name}: {urls}")
 		return_matches.append(RoutingMappingInfo(
 			type="ROUTING",
 			componentName=match.figma.name,
@@ -526,7 +530,7 @@ def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, 
 			failReason=NORMAL,
 			isSuccess=True,
 		))
-		logger.debug(f"Found URL for {match.figma.name}: {urls}")
+		logger.info(f"Found URL for {match.figma.name}: {urls}")
 	else:
 		return_matches.append(RoutingMappingInfo(
 			type="ROUTING",
@@ -537,6 +541,7 @@ def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, 
 			failReason=NORMAL,
 			isSuccess=True,
 		))
+	logger.info(f"After interaction check: {interaction['afterInteraction']}")
 	if "afterInteraction" in interaction and len(interaction['afterInteraction']) > 0:
 		for after_interaction in interaction['afterInteraction']:
 			if after_interaction['interactionType']['navigation'] == 'BACK':
@@ -561,15 +566,22 @@ def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, 
 						failReason=I_ERROR_DIFFERENT_BACK,
 						isSuccess=False,
 					))
-	web_navigator.driver.close()
-	web_navigator.driver.switch_to.window(web_navigator.driver.window_handles[0])
+
+	# Close current window and switch back to main window safely
+	try:
+		if len(web_navigator.driver.window_handles) > 1:
+			web_navigator.driver.close()
+			web_navigator.driver.switch_to.window(web_navigator.driver.window_handles[0])
+	except Exception as e:
+		logger.warning(f"Failed to close/switch window: {e}")
+
 	return return_matches
 
 def match_interaction(matcher: LegacyElementExtractor, matches: List[MatchResult], web_navigator: WebNavigator, web_img: Image.Image, interactions: List[Dict], figma_tree: TreeNode, figma_raw: List[Dict]) -> List[BaseMappingInfo]:
 	return_matches = []
 	for match in matches:
 		interaction = get_interaction_by_id(match.figma.id, interactions)
-		print("##", interaction['interactionType']['navigation'], "##")
+		logger.info(f"Interaction for {match.figma.name}: {interaction['interactionType']['navigation']}")
 		if interaction['interactionType']['navigation'] == 'NAVIGATE':
 			return_matches.extend(check_interaction_navigate(match, web_navigator, figma_raw, web_img, interaction))
 		elif interaction['interactionType']['navigation'] == 'OVERLAY':
@@ -1031,6 +1043,22 @@ def _save_match_crops(figma_img: Image.Image, web_img: Image.Image, matches: Lis
         canvas = Image.new('RGB', (w, h), (30, 30, 30))
         draw = ImageDraw.Draw(canvas)
 
+        # 한글 폰트 로드 (여러 경로 시도)
+        font = None
+        font_paths = [
+            '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',  # 먼저 시도
+            '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+        ]
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    font = ImageFont.truetype(font_path, 14)
+                    break
+                except Exception:
+                    continue
+
         # Header text: scores and texts
         header = (
             f"score={m.score:.2f} | feat={m.feature_similarity:.2f} "
@@ -1039,8 +1067,8 @@ def _save_match_crops(figma_img: Image.Image, web_img: Image.Image, matches: Lis
         sub = (
             f"fig: '{(m.figma.extracted.text or '').strip()}'  |  web: '{(m.web.text or '').strip()}'"
         )
-        draw.text((pad, pad), header, fill=(255, 255, 255))
-        draw.text((pad, pad + 24), sub, fill=(200, 200, 200))
+        draw.text((pad, pad), header, fill=(255, 255, 255), font=font)
+        draw.text((pad, pad + 24), sub, fill=(200, 200, 200), font=font)
 
         # Paste crops
         y0 = header_h + pad
@@ -1258,6 +1286,7 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		# return []
 		logger.info(f"Total matches found: {len(matches)}")
 
+		# return []
 		logger.info("STEP 5: PROCESSING MATCHES & INTERACTIONS")
 		return_matches = []
 		# 리스트를 extend로 합쳐서 중첩된 리스트 구조를 평평하게 만듦

@@ -20,12 +20,13 @@ class VisualizerConfig:
     """시각화 설정 클래스"""
     figure_width: int = 20
     figure_height: int = 10
-    box_linewidth: int = 2
+    box_linewidth: int = 1
     text_fontsize: int = 8
     text_bbox_alpha: float = 0.5
     random_seed: int = 42
     show_match_numbers: bool = True
     connection_line_width: int = 2
+    show_coordinates: bool = False
 
 
 class Visualizer:
@@ -72,17 +73,18 @@ class Visualizer:
                     linewidth=self.config.box_linewidth
                 )
             )
-            plt.text(
-                x1, y1 - 5,
-                f"({int(x1)},{int(y1)})",
-                color='white',
-                fontsize=self.config.text_fontsize,
-                bbox=dict(
-                    facecolor='black',
-                    alpha=self.config.text_bbox_alpha,
-                    pad=1
+            if self.config.show_coordinates:
+                plt.text(
+                    x1, y1 - 5,
+                    f"({int(x1)},{int(y1)})",
+                    color='white',
+                    fontsize=self.config.text_fontsize,
+                    bbox=dict(
+                        facecolor='black',
+                        alpha=self.config.text_bbox_alpha,
+                        pad=1
+                    )
                 )
-            )
 
         plt.title(title)
         plt.axis('off')

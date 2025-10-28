@@ -49,6 +49,7 @@ class WebNavigator:
 		Args:
 			config: 웹 네비게이터 설정. None이면 기본 설정 사용
 		"""
+		desired_dpi = 2.0
 		self.config = config or WebNavigatorConfig()
 		self.opts = Options()
 		self.opts.add_argument('--headless=new')
@@ -57,6 +58,7 @@ class WebNavigator:
 		self.opts.add_argument('--disable-gpu')
 		self.opts.add_argument('--disable-extensions')
 		self.opts.add_argument('--remote-allow-origins=*')
+		self.opts.add_argument(f"--force-device-scale-factor={desired_dpi}")
 
 		import tempfile
 		tmp_dir = tempfile.mkdtemp()
@@ -375,7 +377,7 @@ class WebNavigator:
 			try:
 				# 방법 1: Command+Click (macOS)
 				actions = ActionChains(self.driver)
-				actions.key_down(Keys.COMMAND).click(elem).key_up(Keys.COMMAND).perform()
+				actions.key_down(Keys.CONTROL).click(elem).key_up(Keys.CONTROL).perform()
 			except Exception as click_error:
 				print(f"  Command+Click failed, trying alternative: {click_error}")
 
@@ -400,10 +402,18 @@ class WebNavigator:
 			new_tab = handles[-1]
 			self.driver.switch_to.window(new_tab)
 
-			# 새 탭의 페이지 로딩 완료 대기
-			WebDriverWait(self.driver, 15).until(
-				lambda driver: driver.execute_script("return document.readyState") == "complete"
-			)
+			# 새 탭의 페이지 로딩 대기 (완료를 기다리지 않고 적당히 기다림)
+			# 일부 페이지는 리소스 로딩이 계속되어 readyState가 complete가 안 될 수 있음
+			try:
+				WebDriverWait(self.driver, 5).until(
+					lambda driver: driver.execute_script("return document.readyState") == "complete"
+				)
+			except:
+				# 타임아웃 발생해도 괜찮음 - 페이지는 이미 로드되었을 가능성 높음
+				pass
+
+			# 추가로 2초 대기 (페이지 기본 콘텐츠 로딩 시간)
+			time.sleep(2)
 
 			# 새 탭 URL 반환
 			return self.driver.current_url

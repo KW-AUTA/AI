@@ -1249,58 +1249,31 @@ class ElementExtractor:
 		figma_elements_data: List[FigmaFare],
 		web_elements_data: List[ExtractedElement],
 		min_similarity: float = None,
-		config: Optional['SimilarityConfig'] = None
+		config: Optional['SimilarityConfig'] = None,
+		iou_threshold: float = 0.5
 	) -> Tuple[List[MatchResult], List[MatchResult], List[MatchResult]]:
-		"""최적 매칭 수행 (Hungarian Algorithm)"""
+		"""
+		Performs element matching between Figma and Web elements using similarity scores.
 
+		Args:
+			sim_dict: Dictionary containing similarity matrices for different features
+			figma_elements_data: List of Figma elements
+			web_elements_data: List of Web elements
+			min_similarity: Minimum similarity threshold for matching (default: 0.8)
+			config: Optional similarity configuration (currently unused)
+			iou_threshold: IOU threshold for filtering overlapping unmatched elements (default: 0.5)
+
+		Returns:
+			Tuple of (matched, unmatched_figma, unmatched_web) MatchResult lists
+		"""
 		# 설정 초기화
-		if config is None:
-			from .models import SimilarityConfig
-			config = SimilarityConfig.from_env()
-
 		if min_similarity is None:
-			min_similarity = config.weights.MIN_SIMILARITY
+			# 환경변수로 threshold 조정 가능
+			import os
+			min_similarity = float(os.environ.get('MATCH_THRESHOLD', '0.45'))
+			logger.info(f"Using min_similarity threshold: {min_similarity} (set MATCH_THRESHOLD env to override)")
 
-		weights = config.weights
-
-		# 정규화 함수들
-		def _rowwise_quantile_normalize(
-			mat: np.ndarray,
-			q_low: float = weights.QUANTILE_LOW,
-			q_high: float = weights.QUANTILE_HIGH
-		) -> np.ndarray:
-			if mat.size == 0:
-				return mat.astype(np.float32)
-			low = np.quantile(mat, q_low, axis=1, keepdims=True)
-			high = np.quantile(mat, q_high, axis=1, keepdims=True)
-			range_ = np.clip(high - low, 1e-6, None)
-			mat_clipped = np.clip(mat, low, high)
-			return ((mat_clipped - low) / range_).astype(np.float32)
-
-		def _rowwise_softmax(mat: np.ndarray, tau: float = config.softmax_tau) -> np.ndarray:
-			if mat.size == 0:
-				return mat.astype(np.float32)
-			row_max = np.max(mat, axis=1, keepdims=True)
-			exp = np.exp((mat - row_max) / max(tau, 1e-6))
-			sum_exp = np.sum(exp, axis=1, keepdims=True) + 1e-9
-			return (exp / sum_exp).astype(np.float32)
-
-		# Relative views (경쟁적 할당을 위한)
-		use_softmax_rel = config.use_softmax_relative
-		tau = config.softmax_tau
-
-		if use_softmax_rel:
-			text_mat_rel = _rowwise_softmax(sim_dict['text'].astype(np.float32), tau)
-			feat_mat_rel = _rowwise_softmax(sim_dict['feature'].astype(np.float32), tau)
-			size_mat_rel = _rowwise_softmax(sim_dict['size'].astype(np.float32), tau)
-			coord_mat_rel = _rowwise_softmax(sim_dict['coordinate'].astype(np.float32), tau)
-		else:
-			text_mat_rel = _rowwise_quantile_normalize(sim_dict['text'])
-			feat_mat_rel = _rowwise_quantile_normalize(sim_dict['feature'])
-			size_mat_rel = _rowwise_quantile_normalize(sim_dict['size'])
-			coord_mat_rel = _rowwise_quantile_normalize(sim_dict['coordinate'])
-
-		# Absolute views
+		# Absolute views (단순화)
 		text_mat_abs = sim_dict['text'].astype(np.float32)
 		feat_mat_abs = np.clip(sim_dict['feature'], 0.0, 1.0).astype(np.float32)
 		size_mat_abs = np.clip(sim_dict['size'], 0.0, 1.0).astype(np.float32)
@@ -1321,80 +1294,67 @@ class ElementExtractor:
 				for web in web_elements_data
 			]
 
-		# 동적 텍스트 가중치
-		figma_has_text = np.array([bool(getattr(f.extracted, 'text', '') or '') for f in figma_elements_data], dtype=bool)
-		web_has_text = np.array([bool(getattr(w, 'text', '') or '') for w in web_elements_data], dtype=bool)
-		both_have_text = np.outer(figma_has_text, web_has_text)
+		# 1. Calculate weighted similarity matrix
+		sim_matrix = (
+			text_mat_abs * 0.35 +
+			feat_mat_abs * 0.35 +
+			size_mat_abs * 0.15 +
+			coord_mat_abs * 0.15
+		)
 
-		w_text_base = np.where(both_have_text, weights.TEXT_WITH_BOTH, weights.TEXT_WITHOUT).astype(np.float32)
-		text_scale_factor = weights.TEXT_SCALE_MIN + (weights.TEXT_SCALE_MAX - weights.TEXT_SCALE_MIN) * np.clip(text_mat_abs, 0.0, 1.0)
-		w_text_scaled = (w_text_base * text_scale_factor).astype(np.float32)
+		# 1.5. Pre-filter: Apply masks for invalid matching candidates
+		# This prevents invalid matches from being considered in the first place
 
-		w_feat_base = np.full((N, M), weights.FEATURE_BASE, dtype=np.float32)
-		w_size = np.full((N, M), weights.SIZE_BASE, dtype=np.float32)
-		w_coord = np.full((N, M), weights.COORDINATE_BASE, dtype=np.float32)
-		w_sum = w_text_base + w_feat_base + w_size + w_coord
+		# Check which elements have text (vectorized, with type safety)
+		def has_text_safe(text):
+			if isinstance(text, bool):
+				return False
+			if text is None:
+				return False
+			return bool(str(text).strip())
 
-		# 피처 가중치 조정
-		feat_scale_both = weights.FEAT_SCALE_BOTH_TEXT
-		feat_scale_xor = weights.FEAT_SCALE_XOR_TEXT
-		pair_has_text = np.logical_or.outer(figma_has_text, web_has_text)
-		pair_both_text = both_have_text
-		feat_scale = np.where(pair_both_text, feat_scale_both, np.where(pair_has_text, feat_scale_xor, 1.0)).astype(np.float32)
-		feat_text_scale = weights.FEAT_SCALE_MIN + (1.0 - weights.FEAT_SCALE_MIN) * np.clip(text_mat_abs, 0.0, 1.0)
-		feat_scale *= feat_text_scale
-		w_feat_scaled = (w_feat_base * feat_scale).astype(np.float32)
+		figma_has_text = np.array([has_text_safe(f.extracted.text) for f in figma_elements_data])
+		web_has_text = np.array([has_text_safe(w.text) for w in web_elements_data])
 
-		# 종합 유사도 행렬
-		sim_matrix_rel = (text_mat_rel * w_text_scaled + feat_mat_rel * w_feat_scaled + size_mat_rel * w_size + coord_mat_rel * w_coord) / w_sum
-		sim_matrix_abs = (text_mat_abs * w_text_scaled + feat_mat_abs * w_feat_scaled + size_mat_abs * w_size + coord_mat_abs * w_coord) / w_sum
+		# Create mask: True where text existence matches
+		# Broadcasting: (N, 1) == (1, M) -> (N, M)
+		text_match_mask = figma_has_text[:, np.newaxis] == web_has_text[np.newaxis, :]
 
-		# 디버그 모드
-		if config.debug_mode or getattr(self, 'debug_similarity', False):
-			self._save_debug_similarity_plots(
-				text_mat_abs, feat_mat_abs, size_mat_abs, coord_mat_abs, sim_matrix_abs,
-				text_mat_rel, feat_mat_rel, size_mat_rel, coord_mat_rel, sim_matrix_rel,
-				N, M
-			)
+		# Apply mask: set mismatched pairs to 0
+		filtered_count = np.sum(~text_match_mask)
+		sim_matrix[~text_match_mask] = 0.0
 
-		# Hungarian Algorithm
+		if filtered_count > 0:
+			logger.info(f"Pre-filtered {filtered_count} invalid candidates (text/non-text mismatch)")
+			logger.debug(f"  Figma with text: {np.sum(figma_has_text)}/{N}, Web with text: {np.sum(web_has_text)}/{M}")
+
+		# 2. Greedy matching for high-confidence pairs
 		matches: List[MatchResult] = []
-		row_ind, col_ind = linear_sum_assignment(1.0 - sim_matrix_rel)
-		row_max_rel = sim_matrix_rel.max(axis=1) if N > 0 else np.array([])
-		rel_keep = 0.85
-		used_figma = set()
-		used_web = set()
+		unmatched_figma_idxs = set(range(N))
+		unmatched_web_idxs = set(range(M))
+		temp_matrix = sim_matrix.copy()
 
-		for i, j in zip(row_ind, col_ind):
-			score_rel = float(sim_matrix_rel[i, j])
-			score_abs = float(sim_matrix_abs[i, j])
+		# Debug: Log similarity matrix statistics
+		logger.info(f"Similarity matrix stats - Max: {sim_matrix.max():.3f}, Mean: {sim_matrix.mean():.3f}, Min: {sim_matrix.min():.3f}")
+		logger.info(f"Matching threshold: {min_similarity}")
+		logger.info(f"Scores above threshold: {np.sum(sim_matrix >= min_similarity)}")
 
-			# 임계값 필터링
-			row_thr = float(max(min_similarity, row_max_rel[i] * rel_keep))
-			if score_rel < row_thr or score_abs < min_similarity:
-				continue
+		while True:
+			# Find the highest similarity pair
+			i, j = np.unravel_index(np.argmax(temp_matrix), temp_matrix.shape)
+			score = temp_matrix[i, j]
 
-			# 텍스트 게이팅
-			fig_txt = getattr(figma_elements_data[i].extracted, 'text', '') or ''
-			web_txt = getattr(web_elements_data[j], 'text', '') or ''
-			fig_has = len(fig_txt.strip()) > 0
-			web_has = len(web_txt.strip()) > 0
-			text_sim = float(sim_dict['text'][i, j])
+			# Stop if similarity is below threshold or filtered out (0.0)
+			if score <= 0.0:
+				logger.info(f"Stopped matching - No more valid candidates (best score: {score:.3f})")
+				break
+			if score < min_similarity:
+				logger.info(f"Stopped matching - Best remaining score {score:.3f} < threshold {min_similarity}")
+				break
 
-			try:
-				req_both = float(os.environ.get('SIM_TEXT_REQ_BOTH', '0.40'))
-				req_xor = float(os.environ.get('SIM_TEXT_REQ_XOR', '0.20'))
-				min_len = int(os.environ.get('SIM_TEXT_MIN_LEN', '3'))
-			except Exception:
-				req_both, req_xor, min_len = 0.40, 0.20, 3
+			logger.info(f"Matched - Figma[{i}]: '{figma_elements_data[i].extracted.text}' <-> Web[{j}]: '{web_elements_data[j].text}' | Score: {score:.3f} (text: {sim_dict['text'][i,j]:.2f}, feat: {sim_dict['feature'][i,j]:.2f}, size: {sim_dict['size'][i,j]:.2f}, coord: {sim_dict['coordinate'][i,j]:.2f})")
 
-			if fig_has and web_has:
-				if text_sim < req_both:
-					continue
-			elif fig_has ^ web_has:
-				if max(len(fig_txt), len(web_txt)) >= min_len and text_sim < req_xor:
-					continue
-
+			# Create match result
 			mr = MatchResult(
 				figma=figma_elements_data[i],
 				web=web_elements_data[j],
@@ -1402,7 +1362,7 @@ class ElementExtractor:
 				text_similarity=float(sim_dict['text'][i, j]),
 				size_similarity=float(sim_dict['size'][i, j]),
 				coordinate_similarity=float(sim_dict['coordinate'][i, j]),
-				score=score_abs,
+				score=float(score),
 				errorCategories=ErrorChecker().check_error(
 					figma_elements_data[i].extracted.box,
 					web_elements_data[j].box,
@@ -1411,36 +1371,51 @@ class ElementExtractor:
 				)
 			)
 			matches.append(mr)
-			used_figma.add(i)
-			used_web.add(j)
 
-		# Unmatched 요소들
-		unmatched_figma_idxs = set(range(N)) - used_figma
-		unmatched_web_idxs = set(range(M)) - used_web
+			# Remove matched indices
+			unmatched_figma_idxs.discard(i)
+			unmatched_web_idxs.discard(j)
 
-		# IOU 기반 제외 처리
+			# Mark as matched in temp matrix
+			temp_matrix[i, :] = -np.inf
+			temp_matrix[:, j] = -np.inf
+
+		logger.info(f"Initial matching complete - Matched: {len(matches)}, Unmatched Figma: {len(unmatched_figma_idxs)}, Unmatched Web: {len(unmatched_web_idxs)}")
+		logger.debug(f"Unmatched Figma indices: {unmatched_figma_idxs}")
+		logger.debug(f"Unmatched Web indices: {unmatched_web_idxs}")
+
+		# 3. Apply NMS: Remove unmatched elements with high IOU overlap with matched elements
+		# This filters out elements that are likely duplicates or part of matched elements
+		removed_figma_count = 0
+		removed_web_count = 0
+
 		for mr in matches:
-			# Figma 중 IOU 높은 것 제거
-			to_remove = {
+			# Remove figma elements with high IOU overlap
+			to_remove_figma = {
 				i for i in unmatched_figma_idxs
 				if ElementExtractor.calculate_iou(
 					mr.figma.extracted.box,
 					figma_elements_data[i].extracted.box
-				) > 0.5
+				) > iou_threshold
 			}
-			unmatched_figma_idxs -= to_remove
+			removed_figma_count += len(to_remove_figma)
+			unmatched_figma_idxs -= to_remove_figma
 
-			# Web 중 IOU 높은 것 제거
-			to_remove = {
+			# Remove web elements with high IOU overlap
+			to_remove_web = {
 				j for j in unmatched_web_idxs
 				if ElementExtractor.calculate_iou(
 					mr.web.box,
 					web_elements_data[j].box
-				) > 0.5
+				) > iou_threshold
 			}
-			unmatched_web_idxs -= to_remove
+			removed_web_count += len(to_remove_web)
+			unmatched_web_idxs -= to_remove_web
 
-		# Unmatched MatchResult 생성
+		if removed_figma_count > 0 or removed_web_count > 0:
+			logger.info(f"NMS filtering - Removed {removed_figma_count} Figma and {removed_web_count} Web overlapping elements")
+
+		# 4. Create MatchResult objects for unmatched elements
 		unmatched_figma = [
 			MatchResult(
 				figma=figma_elements_data[i],
@@ -1454,6 +1429,7 @@ class ElementExtractor:
 			)
 			for i in sorted(unmatched_figma_idxs)
 		]
+
 		unmatched_web = [
 			MatchResult(
 				figma=None,
@@ -1467,6 +1443,21 @@ class ElementExtractor:
 			)
 			for j in sorted(unmatched_web_idxs)
 		]
+
+		# Final summary
+		total_figma = len(figma_elements_data)
+		total_web = len(web_elements_data)
+		match_rate_figma = len(matches) / total_figma * 100 if total_figma > 0 else 0
+		match_rate_web = len(matches) / total_web * 100 if total_web > 0 else 0
+
+		logger.info("=" * 80)
+		logger.info(f"MATCHING SUMMARY")
+		logger.info(f"  Total Figma elements: {total_figma}")
+		logger.info(f"  Total Web elements: {total_web}")
+		logger.info(f"  Matched pairs: {len(matches)} ({match_rate_figma:.1f}% of Figma, {match_rate_web:.1f}% of Web)")
+		logger.info(f"  Unmatched Figma: {len(unmatched_figma)}")
+		logger.info(f"  Unmatched Web: {len(unmatched_web)}")
+		logger.info("=" * 80)
 
 		return matches, unmatched_figma, unmatched_web
 

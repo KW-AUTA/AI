@@ -1,0 +1,12 @@
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║ 🔍 YOLO DETECTION START                                                     ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ 📐 Image Size   : 1760 x 1391                                                ║
+║ 🎨 Preprocess   : all                                                        ║
+║ 🐛 Debug Mode   : True                                                       ║
+║ 🪟 Window ID    : window_004_h2430                                           ║
+║ 🏷️  Image Type   : web                                                      ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+Applying preprocessing mode: 'all'
+Preprocessing completed: all

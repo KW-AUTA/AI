@@ -8,6 +8,7 @@ Mapping Processor - 클래스 기반 매핑 처리
 import logging
 import time
 import random
+import os
 import numpy as np
 import torch
 from contextlib import contextmanager
@@ -224,7 +225,7 @@ class ElementExtractorHelper:
         iou_threshold: float = 0.5,
         speed_mode: str = "balanced"
     ) -> List[ExtractedElement]:
-        """이미지에서 요소 추출 (최적화된 슬라이딩 윈도우 버전)
+        """이미지에서 요소 추출 (2중 슬라이딩 윈도우 버전)
 
         Args:
             img: 입력 이미지
@@ -236,58 +237,86 @@ class ElementExtractorHelper:
         Returns:
             추출된 요소 리스트
         """
-        logging.info(f"Extracting elements from image with height {img.height} using {speed_mode} mode...")
+        logging.info(f"Extracting elements from image with height {img.height} using {speed_mode} mode with dual-window...")
 
         # speed_mode에 따른 최적화 설정
+        # 2중 윈도우: 큰 윈도우 + 작은 윈도우
         if speed_mode == "fast":
             if img.height > 2000:
-                optimized_window_height = int(windowing_height * 2.0)
-                overlap_ratio = 0.9
+                large_window_height = int(windowing_height * 2.0)
+                small_window_height = int(windowing_height * 1.0)
+                overlap_ratio = 0.7
             else:
-                optimized_window_height = int(windowing_height * 1.5)
-                overlap_ratio = 0.85
+                large_window_height = int(windowing_height * 1.5)
+                small_window_height = int(windowing_height * 0.8)
+                overlap_ratio = 0.65
             empty_threshold = 0.9
         elif speed_mode == "balanced":
             if img.height > 3000:
-                optimized_window_height = int(windowing_height * 1.5)
-                overlap_ratio = 0.85
+                large_window_height = int(windowing_height * 1.5)
+                small_window_height = int(windowing_height * 0.9)
+                overlap_ratio = 0.65
             elif img.height > 2000:
-                optimized_window_height = int(windowing_height * 1.2)
-                overlap_ratio = 0.8
+                large_window_height = int(windowing_height * 1.2)
+                small_window_height = int(windowing_height * 0.7)
+                overlap_ratio = 0.6
             else:
-                optimized_window_height = windowing_height
-                overlap_ratio = 0.75
+                large_window_height = windowing_height
+                small_window_height = int(windowing_height * 0.6)
+                overlap_ratio = 0.5
             empty_threshold = 0.95
         else:  # "accurate"
-            optimized_window_height = windowing_height
-            overlap_ratio = 0.75
+            large_window_height = windowing_height
+            small_window_height = int(windowing_height * 0.6)
+            overlap_ratio = 0.55
             empty_threshold = 0.98
 
-        # 윈도우 처리
+        # 2중 윈도우 처리: 큰 윈도우와 작은 윈도우를 각각 스캔
         windows_to_process = []
-        current_height = 0
-        start_x = 0
         skipped_windows = 0
 
+        # 1. 큰 윈도우 스캔 (큰 객체용)
+        current_height = 0
         while current_height < img.height:
             crop_img = img.crop((
                 start_x,
                 current_height,
                 img.width,
-                min(current_height + optimized_window_height, img.height)
+                min(current_height + large_window_height, img.height)
             ))
 
             # 빈 윈도우 체크
             if crop_img.height > 100 and self.is_window_empty(crop_img, empty_threshold):
                 skipped_windows += 1
-                current_height += optimized_window_height * overlap_ratio
+                current_height += int(large_window_height * (1 - overlap_ratio))
                 continue
 
-            windows_to_process.append((crop_img, current_height))
-            current_height += optimized_window_height * overlap_ratio
+            windows_to_process.append(("large", crop_img, current_height))
+            current_height += int(large_window_height * (1 - overlap_ratio))
+
+        # 2. 작은 윈도우 스캔 (작은 객체용 - offset 적용)
+        current_height = int(small_window_height * 0.3)  # 작은 오프셋으로 시작
+        while current_height < img.height:
+            crop_img = img.crop((
+                start_x,
+                current_height,
+                img.width,
+                min(current_height + small_window_height, img.height)
+            ))
+
+            # 빈 윈도우 체크
+            if crop_img.height > 100 and self.is_window_empty(crop_img, empty_threshold):
+                skipped_windows += 1
+                current_height += int(small_window_height * (1 - overlap_ratio))
+                continue
+
+            windows_to_process.append(("small", crop_img, current_height))
+            current_height += int(small_window_height * (1 - overlap_ratio))
 
         if skipped_windows > 0:
             logging.info(f"Skipped {skipped_windows} empty windows for optimization")
+
+        logging.info(f"Total {len(windows_to_process)} windows to process (large + small)")
 
         # 각 창에 대해 순차적으로 탐지 및 특징 추출
         all_boxes = []
@@ -295,13 +324,20 @@ class ElementExtractorHelper:
         all_cls = []
         all_features = []
 
-        logging.info(f"Processing {len(windows_to_process)} windows sequentially...")
         start_time = time.time()
 
-        for crop_img, h in windows_to_process:
+        # 디버그 모드 확인
+        debug_preprocessing = os.environ.get('DEBUG_PREPROCESSING', 'false').lower() in ('true', '1', 'yes')
+
+        for idx, (window_type, crop_img, h) in enumerate(windows_to_process, start=1):
+            # 윈도우 ID 생성 (예: "window_001_large_h0000", "window_002_small_h0720")
+            window_id = f"window_{idx:03d}_{window_type}_h{h:04d}"
+
             boxes, scores, cls, feat_map, original_img_size = self.matcher.detect_boxes_yolo(
                 crop_img,
-                extract_features=True
+                extract_features=True,
+                save_preprocessing=debug_preprocessing,
+                window_id=window_id
             )
 
             if len(boxes) == 0:
@@ -331,6 +367,23 @@ class ElementExtractorHelper:
         final_scores = np.concatenate(all_scores)
         final_cls = np.concatenate(all_cls)
         final_features = np.vstack(all_features)
+
+        logging.info(f"Before NMS: {len(final_boxes)} boxes detected")
+
+        # NMS로 중복 제거 (2중 윈도우로 인한 중복 박스 제거)
+        from ..core.element_matcher import non_max_suppression
+        keep_indices = non_max_suppression(final_boxes, final_scores, iou_threshold)
+
+        final_boxes = final_boxes[keep_indices]
+        final_scores = final_scores[keep_indices]
+        final_cls = final_cls[keep_indices]
+
+        # 텐서를 numpy로 변환 (필요한 경우)
+        if hasattr(final_features, 'numpy'):
+            final_features = final_features.numpy()
+        final_features = final_features[keep_indices]
+
+        logging.info(f"After NMS: {len(final_boxes)} boxes remaining")
 
         # ExtractedElement 객체 생성
         extracted_elements = []

@@ -478,8 +478,8 @@ class SimilarityMatcher:
         if self.config.debug_mode:
             self._save_debug_visualizations(sim_result)
 
-        # 헝가리안 알고리즘으로 최적 매칭 (개별 유사도도 전달)
-        matches = self._hungarian_matching(
+        # 그리디 알고리즘으로 최적 매칭
+        matches = self._greedy_matching(
             sim_result.combined_relative,
             sim_result.combined_absolute,
             sim_result,  # 개별 유사도도 전달
@@ -489,7 +489,156 @@ class SimilarityMatcher:
         )
 
         return matches
-    
+
+    def _greedy_matching(
+        self,
+        relative_similarity: np.ndarray,
+        absolute_similarity: np.ndarray,
+        sim_result: SimilarityResult,
+        figma_elements: List[FigmaFare],
+        web_elements: List[ExtractedElement],
+        min_similarity: float
+    ) -> Tuple[List[MatchResult], List[MatchResult], List[MatchResult]]:
+        """그리디 알고리즘으로 최적 매칭"""
+
+        N, M = len(figma_elements), len(web_elements)
+
+        if N == 0 or M == 0:
+            unmatched_figma = [
+                MatchResult(
+                    figma=figma, web=None,
+                    feature_similarity=0.0, text_similarity=0.0,
+                    size_similarity=0.0, coordinate_similarity=0.0,
+                    score=0.0, errorCategories=[G_ERROR_NOT_MATCHED]
+                ) for figma in figma_elements
+            ]
+            unmatched_web = [
+                MatchResult(
+                    figma=None, web=web,
+                    feature_similarity=0.0, text_similarity=0.0,
+                    size_similarity=0.0, coordinate_similarity=0.0,
+                    score=0.0, errorCategories=[G_ERROR_NOT_MATCHED]
+                ) for web in web_elements
+            ]
+            return [], unmatched_figma, unmatched_web
+
+        # 사전 필터링: 텍스트/비텍스트 불일치는 유사도 0으로 마스킹
+        def has_text(obj, attr='text'):
+            text = getattr(obj, attr, '')
+            if isinstance(text, bool):
+                return False
+            return bool(str(text).strip())
+
+        figma_has_text = np.array([has_text(f.extracted, 'text') for f in figma_elements])
+        web_has_text = np.array([has_text(w, 'text') for w in web_elements])
+
+        # XOR 마스크: 한쪽만 텍스트가 있는 경우 (텍스트 존재 여부가 다른 경우)
+        text_mismatch_mask = figma_has_text[:, np.newaxis] != web_has_text[np.newaxis, :]
+
+        # 유사도 행렬에 마스크 적용 (불일치는 0으로)
+        filtered_count = np.sum(text_mismatch_mask)
+        sim_matrix = absolute_similarity.copy()
+        sim_matrix[text_mismatch_mask] = 0.0
+
+        if filtered_count > 0:
+            self.logger.info(f"Pre-filtered {filtered_count} invalid candidates (text/non-text mismatch)")
+
+        # 그리디 매칭
+        matches: List[MatchResult] = []
+        unmatched_figma_idxs = set(range(N))
+        unmatched_web_idxs = set(range(M))
+        temp_matrix = sim_matrix.copy()
+
+        # 통계 로깅
+        self.logger.info(f"Similarity matrix - Max: {sim_matrix.max():.3f}, Mean: {sim_matrix.mean():.3f}, Min: {sim_matrix.min():.3f}")
+        self.logger.info(f"Matching threshold: {min_similarity}")
+        self.logger.info(f"Scores above threshold: {np.sum(sim_matrix >= min_similarity)}")
+
+        while True:
+            # 최고 유사도 쌍 찾기
+            i, j = np.unravel_index(np.argmax(temp_matrix), temp_matrix.shape)
+            score = temp_matrix[i, j]
+
+            # 필터링된 항목 또는 threshold 미달 시 중단
+            if score <= 0.0:
+                self.logger.info(f"Stopped matching - No more valid candidates (best score: {score:.3f})")
+                break
+            if score < min_similarity:
+                self.logger.info(f"Stopped matching - Best remaining score {score:.3f} < threshold {min_similarity}")
+                break
+
+            # 개별 유사도 추출
+            feat_sim = float(sim_result.feature_matrix[i, j])
+            text_sim = float(sim_result.text_matrix[i, j])
+            size_sim = float(sim_result.size_matrix[i, j])
+            coord_sim = float(sim_result.coordinate_matrix[i, j])
+
+            # 하드 제약 조건 체크
+            MIN_TEXT_SIMILARITY_BOTH = float(os.environ.get('MIN_TEXT_SIM_BOTH', '0.50'))
+
+            figma_text = getattr(figma_elements[i].extracted, 'text', '') or ''
+            web_text = getattr(web_elements[j], 'text', '') or ''
+            figma_has_text_curr = bool(figma_text.strip())
+            web_has_text_curr = bool(web_text.strip())
+            both_have_text = figma_has_text_curr and web_has_text_curr
+
+            # 텍스트 유사도 체크 (둘 다 텍스트 있는 경우만)
+            # 텍스트가 너무 다르면 현재 쌍만 제외하고 다음 후보 시도
+            if both_have_text and text_sim < MIN_TEXT_SIMILARITY_BOTH:
+                self.logger.info(f"✗ Rejected by text: figma='{figma_text[:30]}' web='{web_text[:30]}' text_sim={text_sim:.2f} - trying next candidate")
+                # 현재 쌍만 무효화 (i와 j 모두 다른 조합 가능)
+                temp_matrix[i, j] = -np.inf
+                continue
+
+            # 매칭 성공
+            self.logger.info(f"✓ Matched - Figma[{i}]: '{figma_text[:30]}' <-> Web[{j}]: '{web_text[:30]}' | Score: {score:.3f} (text: {text_sim:.2f}, feat: {feat_sim:.2f}, size: {size_sim:.2f}, coord: {coord_sim:.2f})")
+
+            # MatchResult 생성
+            mr = MatchResult(
+                figma=figma_elements[i],
+                web=web_elements[j],
+                feature_similarity=feat_sim,
+                text_similarity=text_sim,
+                size_similarity=size_sim,
+                coordinate_similarity=coord_sim,
+                score=float(score),
+                errorCategories=[]  # 에러 체크는 나중에
+            )
+            matches.append(mr)
+
+            # 매칭된 인덱스 제거
+            unmatched_figma_idxs.discard(i)
+            unmatched_web_idxs.discard(j)
+
+            # 행렬에서 제거
+            temp_matrix[i, :] = -np.inf
+            temp_matrix[:, j] = -np.inf
+
+        self.logger.info(f"Matching complete - Matched: {len(matches)}, Unmatched Figma: {len(unmatched_figma_idxs)}, Unmatched Web: {len(unmatched_web_idxs)}")
+
+        # Unmatched 요소 생성
+        unmatched_figma = [
+            MatchResult(
+                figma=figma_elements[i], web=None,
+                feature_similarity=0.0, text_similarity=0.0,
+                size_similarity=0.0, coordinate_similarity=0.0,
+                score=0.0, errorCategories=[G_ERROR_NOT_MATCHED]
+            )
+            for i in sorted(unmatched_figma_idxs)
+        ]
+
+        unmatched_web = [
+            MatchResult(
+                figma=None, web=web_elements[j],
+                feature_similarity=0.0, text_similarity=0.0,
+                size_similarity=0.0, coordinate_similarity=0.0,
+                score=0.0, errorCategories=[G_ERROR_NOT_MATCHED]
+            )
+            for j in sorted(unmatched_web_idxs)
+        ]
+
+        return matches, unmatched_figma, unmatched_web
+
     def _hungarian_matching(
         self,
         relative_similarity: np.ndarray,
@@ -522,8 +671,31 @@ class SimilarityMatcher:
             ]
             return [], unmatched_figma, unmatched_web
 
+        # 사전 필터링: 텍스트/비텍스트 불일치는 유사도 0으로 마스킹
+        def has_text(obj, attr='text'):
+            text = getattr(obj, attr, '')
+            if isinstance(text, bool):
+                return False
+            return bool(str(text).strip())
+
+        figma_has_text = np.array([has_text(f.extracted, 'text') for f in figma_elements])
+        web_has_text = np.array([has_text(w, 'text') for w in web_elements])
+
+        # XOR 마스크: 한쪽만 텍스트가 있는 경우 (텍스트 존재 여부가 다른 경우)
+        text_mismatch_mask = figma_has_text[:, np.newaxis] != web_has_text[np.newaxis, :]
+
+        # 유사도 행렬에 마스크 적용 (불일치는 0으로)
+        filtered_count = np.sum(text_mismatch_mask)
+        relative_similarity_filtered = relative_similarity.copy()
+        absolute_similarity_filtered = absolute_similarity.copy()
+        relative_similarity_filtered[text_mismatch_mask] = 0.0
+        absolute_similarity_filtered[text_mismatch_mask] = 0.0
+
+        if filtered_count > 0:
+            self.logger.info(f"Pre-filtered {filtered_count} invalid candidates (text/non-text mismatch)")
+
         # 비용 행렬 (1 - 유사도)
-        cost_matrix = 1.0 - relative_similarity
+        cost_matrix = 1.0 - relative_similarity_filtered
 
         # 헝가리안 알고리즘 실행
         figma_indices, web_indices = linear_sum_assignment(cost_matrix)
@@ -534,7 +706,11 @@ class SimilarityMatcher:
 
         # 매칭 결과 처리
         for figma_idx, web_idx in zip(figma_indices, web_indices):
-            absolute_score = absolute_similarity[figma_idx, web_idx]
+            absolute_score = absolute_similarity_filtered[figma_idx, web_idx]
+
+            # 필터링된 항목은 스킵 (score = 0.0)
+            if absolute_score <= 0.0:
+                continue
 
             # 전체 점수 임계값 확인
             if absolute_score < min_similarity:
@@ -569,12 +745,8 @@ class SimilarityMatcher:
                 self.logger.info(f"✗ Rejected by text: figma='{figma_text[:30]}' web='{web_text[:30]}' text_sim={text_sim:.2f}")
                 continue
 
-            # 3. XOR 케이스: 한쪽만 텍스트가 있는 경우 - 거부
-            # 텍스트 요소와 비텍스트 요소는 매칭되면 안됨
-            if figma_has_text ^ web_has_text:  # XOR: 한쪽만 True
-                longer_text = figma_text if figma_has_text else web_text
-                self.logger.info(f"✗ Rejected by text/non-text mismatch: figma_text='{figma_text[:30]}' web_text='{web_text[:30]}'")
-                continue
+            # 3. XOR 케이스는 사전 필터링에서 이미 제거됨 (위에서 마스킹)
+            # 아래 체크는 중복이므로 제거됨
 
             # 4. 텍스트 길이 차이 체크 (둘 다 텍스트가 있는 경우)
             if both_have_text:

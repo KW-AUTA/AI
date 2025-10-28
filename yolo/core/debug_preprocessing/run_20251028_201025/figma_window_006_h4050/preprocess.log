@@ -1,0 +1,12 @@
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║ 🔍 YOLO DETECTION START                                                     ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ 📐 Image Size   : 1760 x   46                                                ║
+║ 🎨 Preprocess   : all                                                        ║
+║ 🐛 Debug Mode   : True                                                       ║
+║ 🪟 Window ID    : window_006_h4050                                           ║
+║ 🏷️  Image Type   : figma                                                    ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+Applying preprocessing mode: 'all'
+Preprocessing completed: all
