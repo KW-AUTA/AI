@@ -1164,12 +1164,13 @@ def mapping_v2(base_url: str, current_page: str, json_url: str, **kwargs):
 		return mapping_legacy(base_url, current_page, json_url, **kwargs)
 
 
-def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False, use_new_pipeline: bool = False):
+def mapping(base_url: str, current_page: str, json_url: str, test_performance: bool = False, use_new_pipeline: bool = False, web_navigator: WebNavigator = None):
 	"""
 	메인 실행 함수 - 새로운 파이프라인과 기존 코드 호환성 제공
-	
+
 	Args:
 		use_new_pipeline: True면 새 파이프라인, False면 기존 코드, None이면 환경변수로 결정
+		web_navigator: 외부에서 제공된 WebNavigator 인스턴스 (서버 모드용)
 	"""
 	# 파이프라인 선택
 	if use_new_pipeline is None:
@@ -1177,13 +1178,13 @@ def mapping(base_url: str, current_page: str, json_url: str, test_performance: b
 
 	if use_new_pipeline:
 		logger.info("Using new class-based pipeline")
-		return mapping_v2(base_url, current_page, json_url, test_performance=test_performance)
+		return mapping_v2(base_url, current_page, json_url, test_performance=test_performance, web_navigator=web_navigator)
 	else:
 		logger.info("Using legacy mapping implementation")
-		return mapping_legacy(base_url, current_page, json_url, test_performance=test_performance)
+		return mapping_legacy(base_url, current_page, json_url, test_performance=test_performance, web_navigator=web_navigator)
 
 
-def mapping_legacy(base_url: str, current_page: str, json_url: str, test_performance: bool = False):
+def mapping_legacy(base_url: str, current_page: str, json_url: str, test_performance: bool = False, web_navigator: WebNavigator = None):
 	"""기존 레거시 매핑 함수 (원본 코드)"""
 	logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	logger.info(f"LEGACY MAPPING STARTED")
@@ -1193,13 +1194,21 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 	target_height = 1080
 	seed_everything(42)
 
-	# WebNavigatorConfig를 사용하여 설정 전달
-	from ..web.web_navigator import WebNavigatorConfig
-	nav_config = WebNavigatorConfig(headless=True, base_url=base_url)
-	web_navigator = WebNavigator(config=nav_config)
+	# WebNavigator 초기화 (외부에서 제공되지 않은 경우)
+	should_cleanup_navigator = False
+	if web_navigator is None:
+		logger.info("Creating new WebNavigator instance")
+		from ..web.web_navigator import WebNavigatorConfig
+		nav_config = WebNavigatorConfig(headless=True, base_url=base_url)
+		web_navigator = WebNavigator(config=nav_config)
+		should_cleanup_navigator = True
+	else:
+		logger.info("Using provided WebNavigator instance (server mode)")
+
 	visualizer = Visualizer()
 
 	# Ray 초기화 (더 많은 워커를 위해 CPU 수 명시)
+	should_cleanup_ray = False
 	if not ray.is_initialized():
 		logger.info("Initializing Ray cluster (CPU: 2, GPU: 0)...")
 		# GPU 관련 경고 메시지 제거
@@ -1214,6 +1223,9 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 			_temp_dir="/tmp/ray"  # Ray 임시 파일 위치 지정
 		)
 		logger.info("Ray cluster initialized successfully")
+		should_cleanup_ray = True
+	else:
+		logger.info("Using existing Ray cluster (server mode)")
 	
 	profiler = cProfile.Profile()
 	profiler.enable()
@@ -1347,13 +1359,16 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		return return_matches
 
 	finally:
-		if web_navigator.driver is not None:
-			logger.info("Closing WebDriver")
+		# WebNavigator 정리 (직접 생성한 경우만)
+		if should_cleanup_navigator and web_navigator.driver is not None:
+			logger.info("Closing WebDriver (standalone mode)")
 			web_navigator.quit()
+		else:
+			logger.info("Keeping WebNavigator alive (server mode)")
 
-		# Ray 정리
-		if ray.is_initialized():
-			logger.info("Shutting down Ray cluster...")
+		# Ray 정리 (직접 초기화한 경우만)
+		if should_cleanup_ray and ray.is_initialized():
+			logger.info("Shutting down Ray cluster (standalone mode)...")
 			# Actor 풀 정리
 			global _actor_pool
 			if _actor_pool is not None:
@@ -1365,6 +1380,8 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 				_actor_pool = None
 			ray.shutdown()
 			logger.info("Ray cluster shutdown completed")
+		else:
+			logger.info("Keeping Ray cluster alive (server mode)")
 
 		profiler.disable()
 		stats = pstats.Stats(profiler).sort_stats('cumtime')

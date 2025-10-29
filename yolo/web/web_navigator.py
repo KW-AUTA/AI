@@ -64,11 +64,11 @@ class WebNavigator:
 		tmp_dir = tempfile.mkdtemp()
 		self.opts.add_argument(f'--user-data-dir={tmp_dir}')
 
-		# 페이지 로드 전략을 'none'으로 설정 (로딩 완료를 기다리지 않음)
-		self.opts.page_load_strategy = 'none'
-
 		service = ChromeService(ChromeDriverManager().install())
 		self.driver = webdriver.Chrome(service=service, options=self.opts)
+
+		# 페이지 로드 타임아웃 설정 (무한 로딩 방지)
+		self.driver.set_page_load_timeout(30)  # 30초
 
 	# ============================================================================
 	# Context Manager Support
@@ -398,22 +398,14 @@ class WebNavigator:
 			new_tab = [h for h in handles if h != original_window][0]
 			self.driver.switch_to.window(new_tab)
 
-			# URL이 설정될 때까지 재시도 (최대 3초)
-			url = ""
-			max_attempts = 10
-			for attempt in range(max_attempts):
-				try:
-					url = self.driver.execute_script("return window.location.href;")
-					# about:blank가 아니고 유효한 URL이면 성공
-					if url and url != "about:blank":
-						break
-				except:
-					pass
-				# 0.3초 대기 후 재시도
-				time.sleep(0.3)
+			# 짧은 대기 후 URL 가져오기
+			time.sleep(0.5)
 
-			# 여전히 about:blank이거나 빈 문자열이면 빈 문자열 반환
-			if url == "about:blank":
+			try:
+				url = self.driver.execute_script("return window.location.href;")
+				if url == "about:blank":
+					url = ""
+			except:
 				url = ""
 
 			# 새 탭 닫기
@@ -451,13 +443,6 @@ class WebNavigator:
 				self._return_to_original_tab()
 
 			return ""
-
-		finally:
-			# 페이지 로드 타임아웃만 원래대로 복구 (항상 실행)
-			try:
-				self.driver.set_page_load_timeout(original_page_load_timeout / 1000)
-			except:
-				pass
 
 	def _return_to_original_tab(self) -> None:
 		"""원래 탭으로 복귀 (내부 헬퍼 메서드)"""

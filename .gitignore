@@ -11,3 +11,6 @@ yolo/weights
 yolo/models_weights
 yolo/core/debug_sim
 yolo/webui
+yolo/data
+yolo/docs
+yolo/debug_sim
