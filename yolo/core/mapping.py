@@ -594,12 +594,16 @@ def process_matches(matcher: LegacyElementExtractor, matches: List[MatchResult],
 	return_matches = []
 
 	for match in matches:
+		# figma가 None인 경우(unmatched web 요소)는 건너뛰기
+		if match.figma is None:
+			continue
+
 		return_matches.append(GeneralMappingInfo(
 			type="GENERAL",
 			componentName=match.figma.name,
 			failReason=", ".join(match.errorCategories) if match.errorCategories != [NORMAL] else "",
 			isSuccess=match.errorCategories == [NORMAL],
-		))        
+		))
 	return return_matches
 
 def load_figma_json(json_url: str) -> Dict:
@@ -1292,7 +1296,9 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		# 리스트를 extend로 합쳐서 중첩된 리스트 구조를 평평하게 만듦
 		return_matches.extend(match_interaction(matcher, matches_interaction, web_navigator, web_img, figma_interactions, figma_tree, figma_raw))
 		logger.info(f"Processed {len(return_matches)} interactive matches")
-		return_matches.extend(process_matches(matcher, matches, web_navigator, figma_interactions, figma_tree, figma_raw))
+		# 매칭된 요소와 매칭되지 않은 요소 모두 처리
+		all_matches = matches + unmatched_figma + unmatched_web
+		return_matches.extend(process_matches(matcher, all_matches, web_navigator, figma_interactions, figma_tree, figma_raw))
 		logger.info(f"Total processed matches: {len(return_matches)}")
 		return return_matches
 

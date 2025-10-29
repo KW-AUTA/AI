@@ -4,6 +4,11 @@ G_ERROR_COORDINATE_Y = 'Y좌표 오차'
 G_ERROR_SIZE = '크기 오차'
 G_ERROR_TEXT = '텍스트 오차'
 G_ERROR_NOT_MATCHED = '매칭 안됨'
+G_ERROR_ASPECT_RATIO = '가로세로 비율 오차'
+G_ERROR_FEATURE_DISSIMILAR = '시각적 특징 불일치'
+G_ERROR_LOW_OVERALL_SCORE = '낮은 전체 스코어'
+G_ERROR_RELATIVE_POSITION = '상대 좌표 오차'
+
 # ROUTE ERROR
 R_ERROR_ROUTING = '라우트 오차' 
 

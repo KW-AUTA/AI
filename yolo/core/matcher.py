@@ -17,7 +17,8 @@ import torch
 from scipy.optimize import linear_sum_assignment
 
 from .models import ExtractedElement, FigmaFare, MatchResult, SimilarityConfig, SimilarityWeights
-from ..utils.error_list import G_ERROR_NOT_MATCHED
+from ..utils.error_list import G_ERROR_NOT_MATCHED, NORMAL
+from ..utils.errorChecker import ErrorChecker
 
 
 class SimilarityStrategy(ABC):
@@ -297,6 +298,7 @@ class SimilarityMatcher:
         
         self.normalizer = MatrixNormalizer()
         self.logger = logging.getLogger(__name__)
+        self.error_checker = ErrorChecker()
     
     def calculate_similarities(
         self,
@@ -479,7 +481,7 @@ class SimilarityMatcher:
             self._save_debug_visualizations(sim_result)
 
         # 그리디 알고리즘으로 최적 매칭
-        matches = self._greedy_matching(
+        matches, unmatched_figma, unmatched_web = self._greedy_matching(
             sim_result.combined_relative,
             sim_result.combined_absolute,
             sim_result,  # 개별 유사도도 전달
@@ -488,7 +490,7 @@ class SimilarityMatcher:
             min_similarity
         )
 
-        return matches
+        return matches, unmatched_figma, unmatched_web
 
     def _greedy_matching(
         self,
@@ -593,7 +595,7 @@ class SimilarityMatcher:
             # 매칭 성공
             self.logger.info(f"✓ Matched - Figma[{i}]: '{figma_text[:30]}' <-> Web[{j}]: '{web_text[:30]}' | Score: {score:.3f} (text: {text_sim:.2f}, feat: {feat_sim:.2f}, size: {size_sim:.2f}, coord: {coord_sim:.2f})")
 
-            # MatchResult 생성
+            # MatchResult 생성 (임시로 NORMAL로 설정)
             mr = MatchResult(
                 figma=figma_elements[i],
                 web=web_elements[j],
@@ -602,8 +604,13 @@ class SimilarityMatcher:
                 size_similarity=size_sim,
                 coordinate_similarity=coord_sim,
                 score=float(score),
-                errorCategories=[NORMAL]  # 매칭 성공
+                errorCategories=[NORMAL]
             )
+
+            # ErrorChecker로 실제 에러 카테고리 검증
+            error_categories = self.error_checker.check_match(mr)
+            mr.errorCategories = error_categories
+
             matches.append(mr)
 
             # 매칭된 인덱스 제거
@@ -800,8 +807,13 @@ class SimilarityMatcher:
                 size_similarity=size_sim,
                 coordinate_similarity=coord_sim,
                 score=float(absolute_score),
-                errorCategories=[NORMAL]  # 매칭 성공
+                errorCategories=[NORMAL]
             )
+
+            # ErrorChecker로 실제 에러 카테고리 검증
+            error_categories = self.error_checker.check_match(match)
+            match.errorCategories = error_categories
+
             matches.append(match)
             matched_figma.add(figma_idx)
             matched_web.add(web_idx)

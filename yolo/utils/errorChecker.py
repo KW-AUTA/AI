@@ -15,6 +15,10 @@ from .error_list import (
     G_ERROR_NOT_MATCHED,
     G_ERROR_SIZE,
     G_ERROR_TEXT,
+    G_ERROR_ASPECT_RATIO,
+    G_ERROR_FEATURE_DISSIMILAR,
+    G_ERROR_LOW_OVERALL_SCORE,
+    G_ERROR_RELATIVE_POSITION,
     NORMAL,
 )
 
@@ -26,6 +30,10 @@ class ErrorCheckConfig:
     coordinate_tolerance: int = 10
     size_tolerance: int = 10
     require_text_match: bool = True
+    aspect_ratio_tolerance: float = 0.2  # 가로세로 비율 오차 허용 범위 (20%)
+    min_feature_similarity: float = 0.3  # 최소 feature 유사도
+    min_overall_score: float = 0.4  # 최소 전체 스코어 (이보다 낮으면 경고)
+    relative_position_tolerance: float = 0.1  # 상대 좌표 오차 허용 범위 (10%)
 
 
 class ErrorManager:
@@ -83,7 +91,50 @@ class ErrorManager:
         web_box = match.web.box
         figma_text = getattr(match.figma.extracted, "text", "")
         web_text = getattr(match.web, "text", "")
-        return self.check(figma_box, web_box, figma_text, web_text)
+
+        # 기본 에러 체크 (좌표, 크기, 텍스트)
+        errors = self.check(figma_box, web_box, figma_text, web_text)
+
+        # 정상이면 추가 에러 체크
+        if errors == [NORMAL]:
+            errors = []
+
+        # 가로세로 비율 체크
+        figma_w = abs(figma_box[2] - figma_box[0])
+        figma_h = abs(figma_box[3] - figma_box[1])
+        web_w = abs(web_box[2] - web_box[0])
+        web_h = abs(web_box[3] - web_box[1])
+
+        figma_ratio = figma_w / max(figma_h, 1)
+        web_ratio = web_w / max(web_h, 1)
+        ratio_diff = abs(figma_ratio - web_ratio) / max(figma_ratio, 0.01)
+
+        if ratio_diff > self.config.aspect_ratio_tolerance:
+            errors.append(G_ERROR_ASPECT_RATIO)
+
+        # Feature 유사도 체크
+        if match.feature_similarity < self.config.min_feature_similarity:
+            errors.append(G_ERROR_FEATURE_DISSIMILAR)
+
+        # 전체 스코어 체크
+        if match.score < self.config.min_overall_score:
+            errors.append(G_ERROR_LOW_OVERALL_SCORE)
+
+        # 상대 좌표 체크 (중심점 기준)
+        figma_cx = (figma_box[0] + figma_box[2]) / 2
+        figma_cy = (figma_box[1] + figma_box[3]) / 2
+        web_cx = (web_box[0] + web_box[2]) / 2
+        web_cy = (web_box[1] + web_box[3]) / 2
+
+        # 화면 크기로 정규화 (임시로 1920x1080 가정)
+        screen_w, screen_h = 1920, 1080
+        rel_diff_x = abs(figma_cx / screen_w - web_cx / screen_w)
+        rel_diff_y = abs(figma_cy / screen_h - web_cy / screen_h)
+
+        if rel_diff_x > self.config.relative_position_tolerance or rel_diff_y > self.config.relative_position_tolerance:
+            errors.append(G_ERROR_RELATIVE_POSITION)
+
+        return errors or [NORMAL]
 
     def annotate_match(self, match: MatchResult) -> MatchResult:
         """MatchResult에 에러 정보를 반영한 새 MatchResult를 반환"""
