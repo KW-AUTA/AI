@@ -502,15 +502,49 @@ def check_interaction_overlay(match: MatchResult, web_navigator: WebNavigator, f
 						actualAction="OVERLAY",
 						failReason=I_ERROR_DIFFERENT_OVERLAY,
 						isSuccess=False,
-					))		
-			web_navigator.driver.close()
-			web_navigator.driver.switch_to.window(web_navigator.driver.window_handles[0])
+					))
+
+			# 안전하게 탭 닫기 및 원래 탭으로 복귀
+			try:
+				current_handles = web_navigator.driver.window_handles
+				if len(current_handles) > 1:
+					web_navigator.driver.close()
+					# 남아있는 핸들 중 첫 번째로 전환
+					remaining_handles = web_navigator.driver.window_handles
+					if remaining_handles:
+						web_navigator.driver.switch_to.window(remaining_handles[0])
+					else:
+						logger.error("No window handles available after closing tab")
+				else:
+					logger.warning("Only one window handle exists, skipping close operation")
+			except Exception as e:
+				logger.error(f"Failed to close/switch window safely: {e}")
+				# 세션이 깨진 경우 복구 시도
+				try:
+					remaining_handles = web_navigator.driver.window_handles
+					if remaining_handles:
+						web_navigator.driver.switch_to.window(remaining_handles[0])
+				except:
+					logger.error("Failed to recover browser session")
 
 	return return_matches
 
 def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, figma_raw: List[Dict], web_img: Image.Image, interaction: Dict) -> bool:
 	return_matches = []
-	original_web_image = Image.open(io.BytesIO(web_navigator.driver.get_screenshot_as_png()))
+
+	# 세션 유효성 검증
+	if not web_navigator.is_session_valid():
+		logger.error(f"Browser session is invalid for {match.figma.name}. Skipping navigation check.")
+		return_matches.append(RoutingMappingInfo(
+			type="ROUTING",
+			componentName=match.figma.name,
+			destinationFigmaPage=interaction['interactionType']['destinationId'],
+			destinationUrl="",
+			actualUrl="",
+			failReason=R_ERROR_SESSION_INVALID,
+			isSuccess=False,
+		))
+		return return_matches
 
 	center_x = float(match.web.box[0] + match.web.box[2]) / 2
 	center_y = float(match.web.box[1] + match.web.box[3]) / 2
@@ -545,10 +579,20 @@ def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, 
 	if "afterInteraction" in interaction and len(interaction['afterInteraction']) > 0:
 		for after_interaction in interaction['afterInteraction']:
 			if after_interaction['interactionType']['navigation'] == 'BACK':
+				# 현재 URL 저장
+				current_url_before_back = web_navigator.driver.execute_script("return window.location.href;")
+
+				# 뒤로가기 실행
 				web_navigator.driver.back()
-				back_image = Image.open(io.BytesIO(web_navigator.driver.get_screenshot_as_png()))
-				diff_img = ImageChops.difference(original_web_image, back_image)
-				if diff_img.getbbox() is not None:
+
+				# 짧은 대기 (페이지 전환 시간)
+				time.sleep(0.5)
+
+				# 뒤로가기 후 URL 확인
+				current_url_after_back = web_navigator.driver.execute_script("return window.location.href;")
+
+				# URL이 변경되었으면 성공
+				if current_url_before_back != current_url_after_back:
 					return_matches.append(InteractionMappingInfo(
 						type="INTERACTION",
 						componentName=match.figma.name,

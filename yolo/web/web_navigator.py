@@ -63,6 +63,10 @@ class WebNavigator:
 		import tempfile
 		tmp_dir = tempfile.mkdtemp()
 		self.opts.add_argument(f'--user-data-dir={tmp_dir}')
+
+		# 페이지 로드 전략을 'none'으로 설정 (로딩 완료를 기다리지 않음)
+		self.opts.page_load_strategy = 'none'
+
 		service = ChromeService(ChromeDriverManager().install())
 		self.driver = webdriver.Chrome(service=service, options=self.opts)
 
@@ -359,74 +363,101 @@ class WebNavigator:
 		Returns:
 			새 탭으로 연 페이지의 URL. 실패 시 빈 문자열
 		"""
+		original_window = self.driver.current_window_handle
+		new_tab = None
+
 		try:
-			# 요소 찾기 및 클릭 가능할 때까지 대기
-			elem = WebDriverWait(self.driver, self.config.element_wait_timeout).until(
-				EC.element_to_be_clickable((By.XPATH, xpath))
+			# 요소 찾기 (타임아웃: 3초)
+			elem = WebDriverWait(self.driver, 3).until(
+				EC.presence_of_element_located((By.XPATH, xpath))
 			)
 
-			# 요소를 화면 중앙으로 스크롤
-			self.driver.execute_script(
-				"arguments[0].scrollIntoView({block: 'center'});", elem
-			)
+			# href 속성 먼저 확인 (빠른 경로)
+			href = elem.get_attribute('href')
 
-			# 스크롤 완료 대기
-			time.sleep(0.5)
-
-			# 새 탭으로 열기 시도 (여러 방법 시도)
-			try:
-				# 방법 1: Command+Click (macOS)
-				actions = ActionChains(self.driver)
-				actions.key_down(Keys.CONTROL).click(elem).key_up(Keys.CONTROL).perform()
-			except Exception as click_error:
-				print(f"  Command+Click failed, trying alternative: {click_error}")
-
-				# 방법 2: href 속성으로 새 탭에서 직접 열기
-				href = elem.get_attribute('href')
-				if href:
-					self.driver.execute_script(f"window.open('{href}', '_blank');")
-				else:
-					# 방법 3: JavaScript로 클릭 이벤트 발생
+			if href and (href.startswith('http://') or href.startswith('https://') or href.startswith('/')):
+				# href가 유효한 URL이면 새 탭으로 바로 열기
+				self.driver.execute_script(f"window.open('{href}', '_blank');")
+			else:
+				# href가 없거나 javascript: 등인 경우 Control+Click
+				try:
+					actions = ActionChains(self.driver)
+					actions.key_down(Keys.CONTROL).click(elem).key_up(Keys.CONTROL).perform()
+				except Exception as click_error:
+					print(f"  Control+Click failed: {click_error}")
+					# JavaScript 클릭 시도
 					self.driver.execute_script("arguments[0].click();", elem)
 
-			# 새 탭이 생성될 때까지 대기
-			WebDriverWait(self.driver, self.config.element_wait_timeout).until(
+			# 새 탭이 생성될 때까지 대기 (타임아웃: 2초)
+			WebDriverWait(self.driver, 2).until(
 				lambda driver: len(driver.window_handles) > 1
 			)
 
-			# 탭 핸들 목록에서 마지막 핸들(새 탭)로 전환
+			# 새 탭으로 전환
 			handles = self.driver.window_handles
-			if len(handles) < 2:
-				return ""
-
-			new_tab = handles[-1]
+			new_tab = [h for h in handles if h != original_window][0]
 			self.driver.switch_to.window(new_tab)
 
-			# 새 탭의 페이지 로딩 대기 (완료를 기다리지 않고 적당히 기다림)
-			# 일부 페이지는 리소스 로딩이 계속되어 readyState가 complete가 안 될 수 있음
-			try:
-				WebDriverWait(self.driver, 5).until(
-					lambda driver: driver.execute_script("return document.readyState") == "complete"
-				)
-			except:
-				# 타임아웃 발생해도 괜찮음 - 페이지는 이미 로드되었을 가능성 높음
-				pass
+			# URL이 설정될 때까지 재시도 (최대 3초)
+			url = ""
+			max_attempts = 10
+			for attempt in range(max_attempts):
+				try:
+					url = self.driver.execute_script("return window.location.href;")
+					# about:blank가 아니고 유효한 URL이면 성공
+					if url and url != "about:blank":
+						break
+				except:
+					pass
+				# 0.3초 대기 후 재시도
+				time.sleep(0.3)
 
-			# 추가로 2초 대기 (페이지 기본 콘텐츠 로딩 시간)
-			time.sleep(2)
+			# 여전히 about:blank이거나 빈 문자열이면 빈 문자열 반환
+			if url == "about:blank":
+				url = ""
 
-			# 새 탭 URL 반환
-			return self.driver.current_url
+			# 새 탭 닫기
+			self.driver.close()
+
+			# 원래 탭으로 복귀
+			self.driver.switch_to.window(original_window)
+
+			return url
 
 		except Exception as e:
 			print(f"Warning: Failed to get URL in new tab: {type(e).__name__}: {e}")
 			print(f"  XPath: {xpath}")
-			print(f"  Current URL: {self.driver.current_url}")
-			print(f"  Window handles: {len(self.driver.window_handles)}")
 
-			# 오류 발생 시 원래 탭으로 복귀 시도
-			self._return_to_original_tab()
+			# 오류 발생 시 새 탭 닫기 시도
+			try:
+				handles = self.driver.window_handles
+				# 새 탭이 열렸다면 닫기
+				if len(handles) > 1 and new_tab:
+					try:
+						self.driver.switch_to.window(new_tab)
+						self.driver.close()
+					except:
+						pass
+
+				# 원래 탭으로 복귀
+				if original_window in handles:
+					self.driver.switch_to.window(original_window)
+				else:
+					# 첫 번째 탭으로 복귀
+					if handles:
+						self.driver.switch_to.window(handles[0])
+			except Exception as cleanup_error:
+				print(f"  Failed to cleanup: {cleanup_error}")
+				self._return_to_original_tab()
+
 			return ""
+
+		finally:
+			# 페이지 로드 타임아웃만 원래대로 복구 (항상 실행)
+			try:
+				self.driver.set_page_load_timeout(original_page_load_timeout / 1000)
+			except:
+				pass
 
 	def _return_to_original_tab(self) -> None:
 		"""원래 탭으로 복귀 (내부 헬퍼 메서드)"""
@@ -439,6 +470,24 @@ class WebNavigator:
 				print(f"  No window handles available")
 		except Exception as return_error:
 			print(f"  Failed to return to original tab: {return_error}")
+
+	# ============================================================================
+	# Session Management
+	# ============================================================================
+
+	def is_session_valid(self) -> bool:
+		"""
+		현재 브라우저 세션이 유효한지 확인
+
+		Returns:
+			세션이 유효하면 True, 그렇지 않으면 False
+		"""
+		try:
+			# 빠른 세션 검증 - window_handles 확인 (즉시 반환)
+			_ = self.driver.window_handles
+			return True
+		except Exception:
+			return False
 
 	# ============================================================================
 	# Resource Management
