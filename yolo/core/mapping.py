@@ -535,10 +535,12 @@ def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, 
 	# 세션 유효성 검증
 	if not web_navigator.is_session_valid():
 		logger.error(f"Browser session is invalid for {match.figma.name}. Skipping navigation check.")
+		destination_id = interaction['interactionType']['destinationId']
+		destination_name = get_name_by_id(destination_id, figma_raw)
 		return_matches.append(RoutingMappingInfo(
 			type="ROUTING",
 			componentName=match.figma.name,
-			destinationFigmaPage=interaction['interactionType']['destinationId'],
+			destinationFigmaPage=destination_name,
 			destinationUrl="",
 			actualUrl="",
 			failReason=R_ERROR_SESSION_INVALID,
@@ -552,13 +554,18 @@ def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, 
 	logger.info(f"Interaction for {match.figma.name}: {interaction['interactionType']['navigation']}")
 	logger.info(f"Element: {element}")
 	logger.info(f"XPath: {xpath}")
+
+	# destinationId를 이름으로 변환
+	destination_id = interaction['interactionType']['destinationId']
+	destination_name = get_name_by_id(destination_id, figma_raw)
+
 	if element is not None and xpath is not None:
 		urls = web_navigator.get_url_in_new_tab(xpath)
 		logger.info(f"Found URL for {match.figma.name}: {urls}")
 		return_matches.append(RoutingMappingInfo(
 			type="ROUTING",
 			componentName=match.figma.name,
-			destinationFigmaPage=interaction['interactionType']['destinationId'],
+			destinationFigmaPage=destination_name,
 			destinationUrl=urls,
 			actualUrl=urls,
 			failReason=NORMAL,
@@ -569,7 +576,7 @@ def check_interaction_navigate(match: MatchResult, web_navigator: WebNavigator, 
 		return_matches.append(RoutingMappingInfo(
 			type="ROUTING",
 			componentName=match.figma.name,
-			destinationFigmaPage=interaction['interactionType']['destinationId'],
+			destinationFigmaPage=destination_name,
 			destinationUrl="",
 			actualUrl="",
 			failReason=NORMAL,
@@ -871,10 +878,26 @@ def get_img_by_id(id: str, figma_raw: List[Dict]) -> Image.Image:
 		if figma_element['data']['id'] == id:
 			min_x = get_min_x(figma_element, 0)
 			img = decode_base64_image(figma_element['data']['image'])
-			img = img.crop((-min_x, 0, figma_element['data']['absolutePosition']['width'] - min_x, figma_element['data']['absolutePosition']['height'])) 
+			img = img.crop((-min_x, 0, figma_element['data']['absolutePosition']['width'] - min_x, figma_element['data']['absolutePosition']['height']))
 			return img
-		
+
 	return None
+
+
+def get_name_by_id(id: str, figma_raw: List[Dict]) -> str:
+	"""ID로 Figma 노드의 이름 가져오기
+
+	Args:
+		id: Figma 노드 ID (예: "1:14")
+		figma_raw: Figma raw 데이터 리스트
+
+	Returns:
+		노드 이름. 찾지 못하면 ID 그대로 반환
+	"""
+	for figma_element in figma_raw:
+		if figma_element['data']['id'] == id:
+			return figma_element['data'].get('name', id)
+	return id
 
 
 def categorize_match(match: MatchResult) -> List[str]:

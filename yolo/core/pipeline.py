@@ -606,8 +606,11 @@ class UIMatchingPipeline:
         # Figma 이미지 딕셔너리 생성
         figma_images = {frame.id: frame.img for frame in figma_document.frames if frame.has_image}
 
+        # Figma ID-to-name 매핑 딕셔너리 생성
+        figma_id_to_name = {frame.id: frame.name for frame in figma_document.frames}
+
         # InteractionTester 생성
-        tester = InteractionTester(web_navigator, figma_images)
+        tester = InteractionTester(web_navigator, figma_images, figma_id_to_name)
 
         # 인터랙션별 매핑 생성 (빠른 검색용)
         interaction_by_source = {

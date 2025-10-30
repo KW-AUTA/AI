@@ -43,14 +43,16 @@ class InteractionResult:
 class InteractionTester:
     """UI 인터랙션 테스트 클래스"""
 
-    def __init__(self, web_navigator: WebNavigator, figma_images: Dict[str, Image.Image]):
+    def __init__(self, web_navigator: WebNavigator, figma_images: Dict[str, Image.Image], figma_id_to_name: Optional[Dict[str, str]] = None):
         """
         Args:
             web_navigator: 웹 네비게이터 인스턴스
             figma_images: Figma 이미지 딕셔너리 {frame_id: Image}
+            figma_id_to_name: Figma ID를 이름으로 변환하는 딕셔너리 (선택)
         """
         self.web_navigator = web_navigator
         self.figma_images = figma_images
+        self.figma_id_to_name = figma_id_to_name or {}
         self.logger = logging.getLogger(__name__)
 
         # 화면 유사도 모델 로드
@@ -208,6 +210,8 @@ class InteractionTester:
         element, xpath = self.web_navigator.get_element_at_coordinate_and_xpath(center_x, center_y)
 
         destination_id = interaction['interactionType']['destinationId']
+        # ID를 이름으로 변환 (매핑이 없으면 ID 그대로 사용)
+        destination_name = self.figma_id_to_name.get(destination_id, destination_id)
 
         if element is not None and xpath is not None:
             urls = self.web_navigator.get_url_in_new_tab(xpath)
@@ -218,7 +222,7 @@ class InteractionTester:
                 actual_action='NAVIGATE',
                 is_success=True,
                 fail_reason=NORMAL,
-                destination_page=destination_id,
+                destination_page=destination_name,
                 destination_url=urls
             ))
         else:
@@ -229,7 +233,7 @@ class InteractionTester:
                 actual_action='None',
                 is_success=True,
                 fail_reason=NORMAL,
-                destination_page=destination_id,
+                destination_page=destination_name,
                 destination_url=""
             ))
 
@@ -299,7 +303,8 @@ class InteractionTester:
 
 def create_interaction_tester(
     web_navigator: WebNavigator,
-    figma_images: Dict[str, Image.Image]
+    figma_images: Dict[str, Image.Image],
+    figma_id_to_name: Optional[Dict[str, str]] = None
 ) -> InteractionTester:
     """InteractionTester 팩토리 함수"""
-    return InteractionTester(web_navigator, figma_images)
+    return InteractionTester(web_navigator, figma_images, figma_id_to_name)
