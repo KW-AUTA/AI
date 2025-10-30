@@ -1212,7 +1212,6 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 	if not ray.is_initialized():
 		logger.info("Initializing Ray cluster (CPU: 2, GPU: 0)...")
 		# GPU 관련 경고 메시지 제거
-		import os
 		os.environ['RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO'] = '0'
 
 		ray.init(

@@ -49,7 +49,7 @@ class WebNavigator:
 		Args:
 			config: 웹 네비게이터 설정. None이면 기본 설정 사용
 		"""
-		desired_dpi = 2.0
+		desired_dpi = 1.0
 		self.config = config or WebNavigatorConfig()
 		self.opts = Options()
 		self.opts.add_argument('--headless=new')
@@ -408,11 +408,17 @@ class WebNavigator:
 			except:
 				url = ""
 
-			# 새 탭 닫기
-			self.driver.close()
-
-			# 원래 탭으로 복귀
+			# 원래 탭으로 먼저 전환 (새 탭 닫기 전에!)
 			self.driver.switch_to.window(original_window)
+
+			# 그 다음 새 탭 닫기
+			if new_tab:
+				try:
+					self.driver.switch_to.window(new_tab)
+					self.driver.close()
+					self.driver.switch_to.window(original_window)
+				except:
+					pass
 
 			return url
 
@@ -452,7 +458,13 @@ class WebNavigator:
 				self.driver.switch_to.window(handles[0])
 				print(f"  Returned to original tab")
 			else:
-				print(f"  No window handles available")
+				# 윈도우가 하나도 없으면 새로 생성
+				print(f"  No window handles available, creating new window...")
+				self.driver.execute_script("window.open('about:blank', '_blank');")
+				handles = self.driver.window_handles
+				if len(handles) > 0:
+					self.driver.switch_to.window(handles[0])
+					print(f"  Created and switched to new window")
 		except Exception as return_error:
 			print(f"  Failed to return to original tab: {return_error}")
 
