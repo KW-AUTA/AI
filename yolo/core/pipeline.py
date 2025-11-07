@@ -556,8 +556,13 @@ class UIMatchingPipeline:
         """결과 후처리"""
         # 에러 체크
         if self.error_checker and self.config.enable_error_checking:
+            self.logger.info(f"Running error checker on {len(self._current_result.matches)} matches")
             for match in self._current_result.matches:
-                match.errorCategories = self.error_checker.check_match(match)
+                errors = self.error_checker.check_match(match)
+                match.errorCategories = errors
+                self.logger.debug(f"Match {match.figma.name if match.figma else 'Unknown'}: errors={errors}")
+        else:
+            self.logger.warning("Error checker is disabled or not available")
 
         # 통계 정보 추가
         self._current_result.debug_info.update({
@@ -633,6 +638,10 @@ class UIMatchingPipeline:
 
             # 결과를 레거시 형식으로 변환
             for test_result in test_results:
+                # detail_info 디버깅
+                detail_info_value = test_result.detail_info if test_result.detail_info else None
+                self.logger.info(f"Interaction {test_result.component_name}: detail_info='{test_result.detail_info}' -> {detail_info_value}")
+
                 if test_result.interaction_type in ['NAVIGATE']:
                     results.append(RoutingMappingInfo(
                         type="ROUTING",
@@ -641,7 +650,8 @@ class UIMatchingPipeline:
                         destinationUrl=test_result.destination_url,
                         actualUrl=test_result.destination_url,
                         failReason=test_result.fail_reason,
-                        isSuccess=test_result.is_success
+                        isSuccess=test_result.is_success,
+                        detailInfo=detail_info_value
                     ))
                 else:  # OVERLAY, BACK
                     results.append(InteractionMappingInfo(
@@ -650,7 +660,8 @@ class UIMatchingPipeline:
                         expectedAction=test_result.expected_action,
                         actualAction=test_result.actual_action,
                         failReason=test_result.fail_reason,
-                        isSuccess=test_result.is_success
+                        isSuccess=test_result.is_success,
+                        detailInfo=detail_info_value
                     ))
 
         return results
@@ -664,11 +675,27 @@ class UIMatchingPipeline:
 
         # 모든 매칭 결과를 GeneralMappingInfo로 변환
         for match in result.matches:
+            comp_name = match.figma.name if match.figma else "Unknown"
+
+            # 디버깅: errorCategories 확인
+            self.logger.info(f"Processing match {comp_name}: errorCategories={match.errorCategories}")
+
+            # 상세 정보 생성 (테스트: 모든 경우에 생성)
+            detail_info = None
+            if self.error_checker:
+                detail_str = self.error_checker.get_detail_info(match)
+                # 빈 문자열이 아닐 때만 설정
+                detail_info = detail_str if detail_str else None
+                self.logger.info(f"Detail info for {comp_name}: '{detail_str}' -> {detail_info}")
+            else:
+                self.logger.info(f"No error_checker available for {comp_name}")
+
             return_matches.append(GeneralMappingInfo(
                 type="GENERAL",
-                componentName=match.figma.name if match.figma else "Unknown",
+                componentName=comp_name,
                 failReason=", ".join(match.errorCategories) if match.errorCategories and match.errorCategories != [NORMAL] else "",
                 isSuccess=match.errorCategories == [NORMAL] if match.errorCategories else True,
+                detailInfo=detail_info
             ))
 
         return return_matches

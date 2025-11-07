@@ -23,7 +23,8 @@ from ..utils.error_list import (
     I_ERROR_NAVIGATE_NOT_OVERLAY,
     I_ERROR_OVERLAY_NOT_FOUND,
     I_ERROR_DIFFERENT_OVERLAY,
-    I_ERROR_DIFFERENT_BACK
+    I_ERROR_DIFFERENT_BACK,
+    detail_image_similarity
 )
 
 
@@ -38,6 +39,7 @@ class InteractionResult:
     fail_reason: str = ""
     destination_page: str = ""
     destination_url: str = ""
+    detail_info: str = ""  # 상세 실패 정보 (이미지 유사도, 픽셀 차이 등)
 
 
 class InteractionTester:
@@ -175,7 +177,7 @@ class InteractionTester:
                 bbox = diff_img.getbbox()
                 overlay_region = after_img.crop(bbox)
 
-                is_similar = self._compare_images(overlay_region, overlay_figma_img)
+                is_similar, distance = self._compare_images(overlay_region, overlay_figma_img)
 
                 results.append(InteractionResult(
                     component_name=match.figma.name,
@@ -183,7 +185,8 @@ class InteractionTester:
                     expected_action='OVERLAY',
                     actual_action='OVERLAY',
                     is_success=is_similar,
-                    fail_reason="" if is_similar else I_ERROR_DIFFERENT_OVERLAY
+                    fail_reason="" if is_similar else I_ERROR_DIFFERENT_OVERLAY,
+                    detail_info="" if is_similar else detail_image_similarity(distance)
                 ))
 
         finally:
@@ -270,8 +273,12 @@ class InteractionTester:
 
         return results
 
-    def _compare_images(self, img1: Image.Image, img2: Image.Image) -> bool:
-        """화면 유사도 비교"""
+    def _compare_images(self, img1: Image.Image, img2: Image.Image) -> tuple[bool, float]:
+        """화면 유사도 비교
+
+        Returns:
+            (is_similar, distance): 유사 여부와 거리값
+        """
         try:
             # numpy array를 PIL Image로 변환
             if isinstance(img1, np.ndarray):
@@ -291,14 +298,15 @@ class InteractionTester:
             dist = torch.linalg.norm(embedding1 - embedding2)
             margin = (0.2 + 0.5) / 2  # margin_pos와 margin_neg의 평균
 
-            is_similar = float(dist) < margin
-            self.logger.debug(f"Image similarity distance: {float(dist):.3f}, similar: {is_similar}")
+            dist_value = float(dist)
+            is_similar = dist_value < margin
+            self.logger.debug(f"Image similarity distance: {dist_value:.3f}, similar: {is_similar}")
 
-            return is_similar
+            return is_similar, dist_value
 
         except Exception as e:
             self.logger.error(f"Image comparison failed: {e}")
-            return False
+            return False, 0.0
 
 
 def create_interaction_tester(

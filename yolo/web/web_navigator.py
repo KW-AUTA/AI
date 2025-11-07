@@ -60,6 +60,12 @@ class WebNavigator:
 		self.opts.add_argument('--remote-allow-origins=*')
 		self.opts.add_argument(f"--force-device-scale-factor={desired_dpi}")
 
+		# 페이지 로드 전략 설정 (타임아웃 방지)
+		# 'normal': 모든 리소스 로드 (기본값)
+		# 'eager': DOM 완료까지만 대기
+		# 'none': 즉시 반환
+		self.opts.page_load_strategy = 'eager'
+
 		import tempfile
 		tmp_dir = tempfile.mkdtemp()
 		self.opts.add_argument(f'--user-data-dir={tmp_dir}')
@@ -68,7 +74,7 @@ class WebNavigator:
 		self.driver = webdriver.Chrome(service=service, options=self.opts)
 
 		# 페이지 로드 타임아웃 설정 (무한 로딩 방지)
-		self.driver.set_page_load_timeout(30)  # 30초
+		self.driver.set_page_load_timeout(60)  # 60초로 증가
 
 	# ============================================================================
 	# Context Manager Support
@@ -94,7 +100,11 @@ class WebNavigator:
 		Args:
 			url: 이동할 URL
 		"""
-		self.driver.get(url)
+		try:
+			self.driver.get(url)
+		except Exception as e:
+			print(f"Warning: driver.get() timeout or error: {e}")
+			# 타임아웃 발생해도 페이지가 부분적으로 로드되었을 수 있으므로 계속 진행
 
 		# 페이지 로딩 완료까지 대기
 		try:
@@ -389,24 +399,47 @@ class WebNavigator:
 					self.driver.execute_script("arguments[0].click();", elem)
 
 			# 새 탭이 생성될 때까지 대기 (타임아웃: 2초)
-			WebDriverWait(self.driver, 2).until(
-				lambda driver: len(driver.window_handles) > 1
-			)
+			try:
+				WebDriverWait(self.driver, 2).until(
+					lambda driver: len(driver.window_handles) > 1
+				)
+			except Exception:
+				# 새 탭이 안 열렸으면 href만 반환
+				if href and href not in ['', '#', 'javascript:void(0)', 'javascript:;']:
+					# 상대 경로면 절대 경로로 변환
+					if href.startswith('/'):
+						from urllib.parse import urljoin
+						href = urljoin(self.driver.current_url, href)
+					return href
+				return ""
 
 			# 새 탭으로 전환
 			handles = self.driver.window_handles
 			new_tab = [h for h in handles if h != original_window][0]
 			self.driver.switch_to.window(new_tab)
 
-			# 짧은 대기 후 URL 가져오기
-			time.sleep(0.5)
+			# URL이 로드될 때까지 짧은 시간 대기 (최대 2초)
+			url = ""
+			max_wait = 2.0  # 최대 2초
+			interval = 0.1  # 100ms 간격
+			elapsed = 0.0
 
-			try:
-				url = self.driver.execute_script("return window.location.href;")
-				if url == "about:blank":
-					url = ""
-			except:
-				url = ""
+			while elapsed < max_wait:
+				try:
+					current_url = self.driver.execute_script("return window.location.href;")
+					# about:blank이 아니고 유효한 URL이면 성공
+					if current_url and current_url != "about:blank":
+						url = current_url
+						break
+				except:
+					pass
+
+				time.sleep(interval)
+				elapsed += interval
+
+			# 여전히 URL을 못 가져왔으면 href 사용
+			if not url or url == "about:blank":
+				url = href if href else ""
 
 			# 원래 탭으로 먼저 전환 (새 탭 닫기 전에!)
 			self.driver.switch_to.window(original_window)

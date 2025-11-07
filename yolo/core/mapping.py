@@ -644,16 +644,30 @@ def process_matches(matcher: LegacyElementExtractor, matches: List[MatchResult],
 	logger.info("Processing matches...")
 	return_matches = []
 
+	# ErrorChecker 인스턴스 생성
+	from ..utils.errorChecker import ErrorChecker
+	error_checker = ErrorChecker()
+
 	for match in matches:
 		# figma가 None인 경우(unmatched web 요소)는 건너뛰기
 		if match.figma is None:
 			continue
 
+		# 에러 카테고리 체크
+		error_categories = error_checker.check_match(match)
+
+		# 상세 정보 생성 (에러가 있는 경우만)
+		detail_info = None
+		if error_categories != [NORMAL]:
+			detail_str = error_checker.get_detail_info(match)
+			detail_info = detail_str if detail_str else None
+
 		return_matches.append(GeneralMappingInfo(
 			type="GENERAL",
 			componentName=match.figma.name,
-			failReason=", ".join(match.errorCategories) if match.errorCategories != [NORMAL] else "",
-			isSuccess=match.errorCategories == [NORMAL],
+			failReason=", ".join(error_categories) if error_categories != [NORMAL] else "",
+			isSuccess=error_categories == [NORMAL],
+			detailInfo=detail_info,
 		))
 	return return_matches
 
@@ -1375,7 +1389,7 @@ def mapping_legacy(base_url: str, current_page: str, json_url: str, test_perform
 		return_matches.extend(match_interaction(matcher, matches_interaction, web_navigator, web_img, figma_interactions, figma_tree, figma_raw))
 		logger.info(f"Processed {len(return_matches)} interactive matches")
 		# 매칭된 요소와 매칭되지 않은 요소 모두 처리
-		all_matches = matches + unmatched_figma + unmatched_web
+		all_matches = matches
 		return_matches.extend(process_matches(matcher, all_matches, web_navigator, figma_interactions, figma_tree, figma_raw))
 		logger.info(f"Total processed matches: {len(return_matches)}")
 		return return_matches

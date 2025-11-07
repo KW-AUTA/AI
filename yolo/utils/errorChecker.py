@@ -20,6 +20,14 @@ from .error_list import (
     G_ERROR_LOW_OVERALL_SCORE,
     G_ERROR_RELATIVE_POSITION,
     NORMAL,
+    detail_coordinate_x,
+    detail_coordinate_y,
+    detail_size,
+    detail_aspect_ratio,
+    detail_text_difference,
+    detail_feature_similarity,
+    detail_overall_score,
+    detail_relative_position,
 )
 
 
@@ -140,6 +148,78 @@ class ErrorManager:
         """MatchResult에 에러 정보를 반영한 새 MatchResult를 반환"""
         errors = self.check_match(match)
         return replace(match, errorCategories=errors)
+
+    def get_detail_info(self, match: MatchResult) -> str:
+        """매칭 결과의 상세 정보를 문자열로 반환"""
+        if match.figma is None or match.web is None:
+            return "매칭되지 않은 요소입니다"
+
+        figma_box = match.figma.extracted.box
+        web_box = match.web.box
+
+        details = []
+
+        # X 좌표 차이
+        x_diff = figma_box[0] - web_box[0]
+        if abs(x_diff) > self.config.coordinate_tolerance:
+            details.append(detail_coordinate_x(x_diff))
+
+        # Y 좌표 차이
+        y_diff = figma_box[1] - web_box[1]
+        if abs(y_diff) > self.config.coordinate_tolerance:
+            details.append(detail_coordinate_y(y_diff))
+
+        # 크기 차이
+        figma_w = abs(figma_box[2] - figma_box[0])
+        figma_h = abs(figma_box[3] - figma_box[1])
+        web_w = abs(web_box[2] - web_box[0])
+        web_h = abs(web_box[3] - web_box[1])
+
+        w_diff = figma_w - web_w
+        h_diff = figma_h - web_h
+        if abs(w_diff) > self.config.size_tolerance or abs(h_diff) > self.config.size_tolerance:
+            # 큰 차이를 먼저 보여줌
+            if abs(w_diff) > abs(h_diff):
+                details.append(f"너비가 {abs(w_diff):.1f}px {'크게' if w_diff > 0 else '작게'} 되어 있습니다")
+            else:
+                details.append(f"높이가 {abs(h_diff):.1f}px {'크게' if h_diff > 0 else '작게'} 되어 있습니다")
+
+        # 가로세로 비율 차이
+        figma_ratio = figma_w / max(figma_h, 1)
+        web_ratio = web_w / max(web_h, 1)
+        ratio_diff = abs(figma_ratio - web_ratio) / max(figma_ratio, 0.01)
+        if ratio_diff > self.config.aspect_ratio_tolerance:
+            details.append(detail_aspect_ratio(figma_ratio, web_ratio))
+
+        # 텍스트 차이
+        figma_text = getattr(match.figma.extracted, "text", "")
+        web_text = getattr(match.web, "text", "")
+        if self.config.require_text_match and figma_text and web_text and figma_text != web_text:
+            details.append(detail_text_difference(figma_text, web_text))
+
+        # 시각적 특징 유사도
+        if match.feature_similarity < self.config.min_feature_similarity:
+            details.append(detail_feature_similarity(match.feature_similarity))
+
+        # 전체 매칭 스코어
+        if match.score < self.config.min_overall_score:
+            details.append(detail_overall_score(match.score))
+
+        # 상대 좌표 오차
+        figma_cx = (figma_box[0] + figma_box[2]) / 2
+        figma_cy = (figma_box[1] + figma_box[3]) / 2
+        web_cx = (web_box[0] + web_box[2]) / 2
+        web_cy = (web_box[1] + web_box[3]) / 2
+
+        # 화면 크기로 정규화 (임시로 1920x1080 가정)
+        screen_w, screen_h = 1920, 1080
+        rel_diff_x = abs(figma_cx / screen_w - web_cx / screen_w)
+        rel_diff_y = abs(figma_cy / screen_h - web_cy / screen_h)
+
+        if rel_diff_x > self.config.relative_position_tolerance or rel_diff_y > self.config.relative_position_tolerance:
+            details.append(detail_relative_position(rel_diff_x, rel_diff_y))
+
+        return ", ".join(details) if details else ""
 
 
 class ErrorChecker(ErrorManager):

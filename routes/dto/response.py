@@ -14,16 +14,19 @@ class RoutingMappingInfo(BaseMappingInfo):
     destinationFigmaPage: Optional[str]
     destinationUrl: Optional[str]
     actualUrl: Optional[str]
+    detailInfo: Optional[str] = None  # 상세 실패 정보 (URL 차이 등)
 
 
 class InteractionMappingInfo(BaseMappingInfo):
     type: Literal["INTERACTION"]
     expectedAction: Optional[str]
     actualAction: Optional[str]
+    detailInfo: Optional[str] = None  # 상세 에러 정보 (이미지 유사도 등)
 
 
 class GeneralMappingInfo(BaseMappingInfo):
     type: Literal["GENERAL"]
+    detailInfo: Optional[str] = None  # 상세 실패 정보 (픽셀 차이, 크기 차이 등)
 
 
 MappingInfo = Union[RoutingMappingInfo, InteractionMappingInfo, GeneralMappingInfo]
